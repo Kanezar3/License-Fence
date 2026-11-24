@@ -3,14 +3,24 @@ export function getVerdictDotColor(verdict: string): string {
   if (v === 'PERMISSIVE' || v === 'CLEARED_FOR_RELEASE' || v === 'CLEARED' || v === 'SLOT_CLEARED') {
     return 'bg-emerald-400';
   }
-  if (v === 'NETWORK_COPYLEFT' || v === 'STRONG_COPYLEFT' || v === 'CONTAMINATED' || v === 'CONTAMINATION_TRIGGERED') {
+  if (
+    v === 'NETWORK_COPYLEFT' ||
+    v === 'STRONG_COPYLEFT' ||
+    v === 'SOURCE_AVAILABLE_RESTRICTED' ||
+    v === 'CONTAMINATED' ||
+    v === 'CONTAMINATION_TRIGGERED' ||
+    v === 'FINALIZED_ERROR'
+  ) {
     return 'bg-rose-400';
   }
-  if (v === 'WEAK_COPYLEFT' || v === 'INSUFFICIENT_EVIDENCE' || v === 'TOO_VAGUE') {
+  if (v === 'WEAK_COPYLEFT' || v === 'INSUFFICIENT_EVIDENCE' || v === 'TOO_VAGUE' || v === 'ACCEPTED') {
     return 'bg-amber-400';
   }
-  if (v === 'EXPIRED_REFUNDED') {
+  if (v === 'EXPIRED_REFUNDED' || v === 'PENDING') {
     return 'bg-sky-400';
+  }
+  if (v === 'FINALIZED_SUCCESS') {
+    return 'bg-emerald-400';
   }
   return 'bg-zinc-400';
 }
@@ -24,13 +34,20 @@ export function VerdictBadge({
 }) {
   const v = verdict.toUpperCase();
   let tone = 'border-white/[0.10] bg-white/[0.03] text-zinc-200';
-  if (v === 'PERMISSIVE' || v === 'CLEARED_FOR_RELEASE' || v === 'SLOT_CLEARED') {
+  if (v === 'PERMISSIVE' || v === 'CLEARED_FOR_RELEASE' || v === 'SLOT_CLEARED' || v === 'FINALIZED_SUCCESS') {
     tone = 'border-emerald-500/25 bg-emerald-500/[0.08] text-emerald-300';
-  } else if (v === 'NETWORK_COPYLEFT' || v === 'STRONG_COPYLEFT' || v === 'CONTAMINATED' || v === 'CONTAMINATION_TRIGGERED') {
+  } else if (
+    v === 'NETWORK_COPYLEFT' ||
+    v === 'STRONG_COPYLEFT' ||
+    v === 'SOURCE_AVAILABLE_RESTRICTED' ||
+    v === 'CONTAMINATED' ||
+    v === 'CONTAMINATION_TRIGGERED' ||
+    v === 'FINALIZED_ERROR'
+  ) {
     tone = 'border-rose-500/25 bg-rose-500/[0.08] text-rose-300';
-  } else if (v === 'WEAK_COPYLEFT' || v === 'INSUFFICIENT_EVIDENCE' || v === 'TOO_VAGUE') {
+  } else if (v === 'WEAK_COPYLEFT' || v === 'INSUFFICIENT_EVIDENCE' || v === 'TOO_VAGUE' || v === 'ACCEPTED') {
     tone = 'border-amber-500/25 bg-amber-500/[0.08] text-amber-300';
-  } else if (v === 'EXPIRED_REFUNDED') {
+  } else if (v === 'EXPIRED_REFUNDED' || v === 'PENDING') {
     tone = 'border-sky-500/25 bg-sky-500/[0.08] text-sky-300';
   }
 

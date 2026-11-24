@@ -1,11 +1,25 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, ExternalLink, ShieldAlert, ShieldCheck, Fingerprint } from 'lucide-react';
-import type { OnChainBundle, ProofBundle, ProofCase } from '../types/licenseFence';
+import {
+  CheckCircle2,
+  ExternalLink,
+  ShieldAlert,
+  ShieldCheck,
+  Fingerprint,
+  AlertTriangle,
+} from 'lucide-react';
+import type { LiveTxStatus, OnChainBundle, ProofBundle, ProofCase } from '../types/licenseFence';
 import { computeSha256Hex, formatWeiToGen, truncateMiddle } from '../lib/validation';
 import { getVerdictDotColor, VerdictBadge } from './VerdictBadge';
+import { AppealWindowPanel } from './AppealWindowPanel';
 
 const POLICIES = ['PERMISSIVE_ONLY', 'PROPRIETARY_COMMERCIAL', 'SAAS_CLOUD_SERVICE'] as const;
-const CLASSES = ['PERMISSIVE', 'WEAK_COPYLEFT', 'STRONG_COPYLEFT', 'NETWORK_COPYLEFT'] as const;
+const CLASSES = [
+  'PERMISSIVE',
+  'WEAK_COPYLEFT',
+  'STRONG_COPYLEFT',
+  'NETWORK_COPYLEFT',
+  'SOURCE_AVAILABLE_RESTRICTED',
+] as const;
 const ALLOWED: Record<string, string[]> = {
   PERMISSIVE_ONLY: ['PERMISSIVE'],
   PROPRIETARY_COMMERCIAL: ['PERMISSIVE', 'WEAK_COPYLEFT'],
@@ -15,9 +29,13 @@ const ALLOWED: Record<string, string[]> = {
 export function BundleDossierPanel({
   proof,
   liveBundles,
+  liveTxMap,
+  rpcState,
 }: {
   proof: ProofBundle;
   liveBundles: OnChainBundle[] | null;
+  liveTxMap: Record<string, LiveTxStatus>;
+  rpcState: 'idle' | 'live' | 'error';
 }) {
   const [selectedCode, setSelectedCode] = useState<string>(proof.cases[0]?.exhibit_code ?? 'LF-01');
   const [filter, setFilter] = useState<string>('ALL');
@@ -25,8 +43,14 @@ export function BundleDossierPanel({
 
   const cases = proof.cases.filter((c) => {
     if (filter === 'ALL') return true;
-    if (filter === 'CLEARED') return c.bundle_status === 'CLEARED_FOR_RELEASE' || c.verdict === 'PERMISSIVE';
-    if (filter === 'CONTAMINATED') return c.bundle_status === 'CONTAMINATED' || c.verdict === 'NETWORK_COPYLEFT';
+    if (filter === 'CLEARED')
+      return c.bundle_status === 'CLEARED_FOR_RELEASE' || c.verdict === 'PERMISSIVE' || c.verdict === 'WEAK_COPYLEFT';
+    if (filter === 'CONTAMINATED')
+      return (
+        c.bundle_status === 'CONTAMINATED' ||
+        c.verdict === 'NETWORK_COPYLEFT' ||
+        c.verdict === 'SOURCE_AVAILABLE_RESTRICTED'
+      );
     if (filter === 'RETRY') return c.verdict === 'INSUFFICIENT_EVIDENCE' || c.verdict === 'TOO_VAGUE';
     if (filter === 'EXPIRED') return c.verdict === 'EXPIRED_REFUNDED';
     return true;
@@ -39,10 +63,18 @@ export function BundleDossierPanel({
     setShaStatus('idle');
   }, [active?.exhibit_code]);
 
-  const bundlesSource = liveBundles ?? proof.on_chain_snapshot.bundles;
-  const activeBundle = active?.bundle_id
-    ? bundlesSource.find((b) => b.bundle_id === active.bundle_id) ?? null
+  const recordedBundle = active?.bundle_id
+    ? proof.on_chain_snapshot.bundles.find((b) => b.bundle_id === active.bundle_id) ?? null
     : null;
+  const liveBundle = active?.bundle_id && liveBundles
+    ? liveBundles.find((b) => b.bundle_id === active.bundle_id) ?? null
+    : null;
+  const displayBundle = liveBundle ?? recordedBundle;
+
+  const primaryTx = active?.audit_tx_hash || active?.open_tx_hash || '';
+  const liveTx = primaryTx ? liveTxMap[primaryTx.toLowerCase()] : undefined;
+  const parityMatches =
+    liveBundle && recordedBundle ? liveBundle.status === recordedBundle.status : liveTx?.stage === 'FINALIZED_SUCCESS';
 
   const handleVerifySha = async () => {
     if (!active?.snippet_excerpt || !active?.snippet_sha256) return;
@@ -72,7 +104,7 @@ export function BundleDossierPanel({
             { id: 'ALL', label: 'All Exhibits' },
             { id: 'CLEARED', label: 'Cleared' },
             { id: 'CONTAMINATED', label: 'Contaminated' },
-            { id: 'RETRY', label: 'Retry / Rejected' },
+            { id: 'RETRY', label: 'Spoof / Retry / Rejected' },
             { id: 'EXPIRED', label: 'Expired' },
           ].map((f) => (
             <button
@@ -91,13 +123,12 @@ export function BundleDossierPanel({
         </div>
 
         <span className="font-mono text-xs text-zinc-500">
-          Deterministic SPDX Lattice · {bundlesSource.length} On-Chain Bundles
+          5-Class SPDX Lattice · Per-Slot Repo Pinning · {proof.cases.length} Live Exhibits
         </span>
       </div>
 
       {/* Master-Detail Split */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Left Exhibit Rail */}
         <aside className="lg:col-span-4 rounded-lg border border-white/[0.08] bg-[#0F0F12] divide-y divide-white/[0.06] overflow-hidden">
           {cases.map((item) => {
             const isSel = item.exhibit_code === active?.exhibit_code;
@@ -132,7 +163,6 @@ export function BundleDossierPanel({
           })}
         </aside>
 
-        {/* Right Detail Dossier */}
         {active && (
           <section className="lg:col-span-8 rounded-lg border border-white/[0.08] bg-[#0F0F12] p-5 space-y-5">
             <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/[0.08] pb-4">
@@ -147,34 +177,92 @@ export function BundleDossierPanel({
               <VerdictBadge verdict={active.verdict} reasonCode={active.reason_code} />
             </div>
 
-            {/* Multi-Slot Bundle Status Table */}
-            {activeBundle && (
+            {/* Explicit Recorded Proof vs Live StudioNet RPC Read Parity Strip */}
+            <div className="grid grid-cols-1 md:grid-cols-2 rounded-md border border-white/[0.08] divide-y md:divide-y-0 md:divide-x divide-white/[0.08] bg-[#121216] text-xs">
+              <div className="p-3 space-y-1">
+                <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                  Recorded Proof (deploy/proof.json)
+                </div>
+                <div className="flex items-center justify-between font-mono text-[11px]">
+                  <span className="text-zinc-200">{recordedBundle?.status ?? active.bundle_status}</span>
+                  {primaryTx && (
+                    <a
+                      href={`${proof.explorer_url}/tx/${primaryTx}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-zinc-400 hover:text-white"
+                    >
+                      {truncateMiddle(primaryTx, 8, 6)} <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                </div>
+              </div>
+              <div className="p-3 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                    Live StudioNet RPC Read
+                  </span>
+                  {rpcState === 'error' ? (
+                    <span className="inline-flex items-center gap-1 font-mono text-[10px] text-rose-300">
+                      <AlertTriangle className="h-3 w-3" /> RPC Error
+                    </span>
+                  ) : liveBundle || liveTx ? (
+                    parityMatches ? (
+                      <span className="inline-flex items-center gap-1 font-mono text-[10px] text-emerald-300">
+                        <CheckCircle2 className="h-3 w-3" /> Verified On-Chain
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 font-mono text-[10px] text-amber-300">
+                        <AlertTriangle className="h-3 w-3" /> State Diff
+                      </span>
+                    )
+                  ) : (
+                    <span className="font-mono text-[10px] text-zinc-500">Syncing...</span>
+                  )}
+                </div>
+                <div className="font-mono text-[11px] text-zinc-300">
+                  {liveBundle
+                    ? `On-chain Bundle #${liveBundle.bundle_id}: ${liveBundle.status}`
+                    : liveTx
+                      ? `Live Tx Status: ${liveTx.statusName} (${liveTx.executionResult})`
+                      : 'Click "Verify Live StudioNet" to refresh RPC read'}
+                </div>
+              </div>
+            </div>
+
+            {/* Multi-Slot Bundle Table with Per-Slot Repo Prefix */}
+            {displayBundle && (
               <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                   <span className="font-medium text-zinc-300">
-                    Dependency Slots ({activeBundle.cleared_slot_count}/{activeBundle.total_slots} Cleared)
+                    Dependency Slots ({displayBundle.cleared_slot_count}/{displayBundle.total_slots} Cleared)
                   </span>
                   <span className="font-mono text-zinc-400">
-                    Policy: <strong className="text-zinc-200">{activeBundle.target_policy}</strong> · Escrow:{' '}
-                    <strong className="text-zinc-200">{formatWeiToGen(activeBundle.escrow_wei)}</strong>
+                    Policy: <strong className="text-zinc-200">{displayBundle.target_policy}</strong> · Escrow:{' '}
+                    <strong className="text-zinc-200">{formatWeiToGen(displayBundle.escrow_wei)}</strong>
                   </span>
                 </div>
-                <div className="rounded-md border border-white/[0.08] overflow-hidden">
+                <div className="rounded-md border border-white/[0.08] overflow-x-auto">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-white/[0.02] text-zinc-500 border-b border-white/[0.06]">
                       <tr>
                         <th className="px-3 py-2 font-medium">Slot</th>
-                        <th className="px-3 py-2 font-medium">Dependency</th>
+                        <th className="px-3 py-2 font-medium">Dependency &amp; Bound Repo</th>
                         <th className="px-3 py-2 font-medium">Status</th>
                         <th className="px-3 py-2 font-medium">Judged Class</th>
-                        <th className="px-3 py-2 font-medium text-right">Attempts</th>
+                        <th className="px-3 py-2 font-medium text-right">Audits</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/[0.06] font-mono">
-                      {activeBundle.slots.map((s) => (
+                      {displayBundle.slots.map((s) => (
                         <tr key={s.slot_index} className="text-zinc-300">
                           <td className="px-3 py-2 text-zinc-500">#{s.slot_index}</td>
-                          <td className="px-3 py-2 text-zinc-100">{s.name}</td>
+                          <td className="px-3 py-2">
+                            <div className="text-zinc-100">{s.name}</div>
+                            <div className="text-[10px] text-zinc-500 truncate max-w-[260px]">
+                              {s.allowed_repo_prefix.replace('https://raw.githubusercontent.com/', '')}
+                            </div>
+                          </td>
                           <td className="px-3 py-2">
                             <span className="inline-flex items-center gap-1.5">
                               <span className={`h-1.5 w-1.5 rounded-full ${getVerdictDotColor(s.status)}`} />
@@ -182,7 +270,7 @@ export function BundleDossierPanel({
                             </span>
                           </td>
                           <td className="px-3 py-2 text-zinc-400">{s.license_class || '—'}</td>
-                          <td className="px-3 py-2 text-right text-zinc-400">{s.attempts}/5</td>
+                          <td className="px-3 py-2 text-right text-zinc-400">{s.attempts}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -248,7 +336,7 @@ export function BundleDossierPanel({
                   </a>
                 </div>
 
-                <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border border-white/[0.08] bg-[#09090B] p-3.5 font-mono text-xs leading-relaxed text-zinc-300">
+                <pre className="max-h-52 overflow-y-auto whitespace-pre-wrap rounded-md border border-white/[0.08] bg-[#09090B] p-4 font-mono text-xs leading-relaxed text-zinc-300">
                   {highlightExcerpt(active.snippet_excerpt, active.evidence_quote)}
                 </pre>
 
@@ -256,6 +344,15 @@ export function BundleDossierPanel({
                   On-chain SHA-256: <span className="text-zinc-300">{active.snippet_sha256}</span>
                 </div>
               </div>
+            )}
+
+            {/* Native GenLayer Appeal Window */}
+            {primaryTx && (
+              <AppealWindowPanel
+                txHash={primaryTx}
+                stage={liveTx?.stage ?? 'FINALIZED_SUCCESS'}
+                appealed={liveTx?.appealed}
+              />
             )}
 
             {/* StudioNet Tx Anchors */}
@@ -295,14 +392,14 @@ export function BundleDossierPanel({
         )}
       </div>
 
-      {/* Deterministic SPDX Compatibility Lattice Reference */}
+      {/* 5-Class Deterministic SPDX Compatibility Lattice */}
       <div className="rounded-lg border border-white/[0.08] bg-[#0F0F12] p-4">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <h3 className="text-sm font-semibold text-zinc-100">
-            Deterministic SPDX Compatibility Lattice
+            Deterministic 5-Class SPDX &amp; Source-Available Lattice
           </h3>
           <span className="font-mono text-[11px] text-zinc-500">
-            Enforced in plain Python after Optimistic Democracy classification
+            Evaluated in plain Python after GenLayer validator classification
           </span>
         </div>
         <div className="overflow-x-auto">
@@ -311,7 +408,7 @@ export function BundleDossierPanel({
               <tr>
                 <th className="py-2 pr-4 font-medium">Target Policy</th>
                 {CLASSES.map((cls) => (
-                  <th key={cls} className="py-2 px-3 font-medium">
+                  <th key={cls} className="py-2 px-2.5 font-medium">
                     {cls}
                   </th>
                 ))}
@@ -324,7 +421,7 @@ export function BundleDossierPanel({
                   {CLASSES.map((cls) => {
                     const ok = ALLOWED[pol].includes(cls);
                     return (
-                      <td key={cls} className="py-2.5 px-3">
+                      <td key={cls} className="py-2.5 px-2.5">
                         {ok ? (
                           <span className="inline-flex items-center gap-1 text-emerald-300">
                             <ShieldCheck className="h-3.5 w-3.5" />

@@ -1,11 +1,13 @@
 import { createClient } from 'genlayer-js';
 import { studionet } from 'genlayer-js/chains';
 import type {
+  LiveTxStatus,
   OnChainAudit,
   OnChainBundle,
   OnChainRejection,
   ProtocolStats,
 } from '../types/licenseFence';
+import { mapGenLayerStatusToLifecycle } from './txTracker';
 
 export const STUDIONET_CHAIN_ID = 61999;
 export const STUDIONET_RPC_URL = 'https://studio.genlayer.com/api';
@@ -56,6 +58,86 @@ export async function readLiveProtocolSnapshot(contractAddress: string): Promise
     audits: parseJson<OnChainAudit[]>(auditsRaw),
     rejections: parseJson<OnChainRejection[]>(rejRaw),
   };
+}
+
+export async function fetchTransactionLifecycle(txHash: string): Promise<LiveTxStatus> {
+  const checkedAt = new Date().toISOString();
+  try {
+    const client = createReadOnlyClient();
+    const rec = (await client.getTransaction({
+      hash: txHash as never,
+    })) as Record<string, unknown> | null;
+
+    if (!rec) {
+      return {
+        txHash,
+        stage: 'SUBMITTED',
+        statusName: 'SUBMITTED',
+        executionResult: 'PENDING',
+        lastCheckedAt: checkedAt,
+      };
+    }
+
+    const lifecycle = (rec.lifecycle ?? {}) as Record<string, unknown>;
+    const lcState = String(lifecycle.state ?? '').toUpperCase();
+    const rawStatus = String(rec.status_name ?? rec.status ?? '').toUpperCase();
+    const statusName =
+      rawStatus && rawStatus !== 'UNDEFINED' && rawStatus !== 'NULL'
+        ? rawStatus
+        : lcState === 'FINALIZED'
+          ? 'FINALIZED'
+          : lcState === 'DECIDED'
+            ? 'ACCEPTED'
+            : lcState === 'PROCESSING'
+              ? 'PENDING'
+              : 'PENDING';
+
+    let execRes = String(rec.execution_result ?? '').toUpperCase();
+    if (!execRes || execRes === 'UNDEFINED' || execRes === 'NULL') {
+      const cons = rec.consensus_data as Record<string, unknown> | undefined;
+      const lrRaw = cons?.leader_receipt;
+      const lr = Array.isArray(lrRaw)
+        ? (lrRaw[0] as Record<string, unknown> | undefined)
+        : (lrRaw as Record<string, unknown> | undefined);
+      if (lr && lr.execution_result) {
+        execRes = String(lr.execution_result).toUpperCase();
+      }
+    }
+
+    return {
+      txHash,
+      stage: mapGenLayerStatusToLifecycle(statusName, execRes),
+      statusName,
+      executionResult: execRes || 'PENDING',
+      blockNumber: (rec.block_number as string | number | null | undefined) ?? null,
+      appealed: Boolean(rec.appealed),
+      lastCheckedAt: checkedAt,
+    };
+  } catch (err) {
+    return {
+      txHash,
+      stage: 'PENDING',
+      statusName: 'RPC_ERROR',
+      executionResult: 'UNKNOWN',
+      lastCheckedAt: checkedAt,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export async function submitTransactionAppeal(
+  account: string,
+  txHash: string
+): Promise<string> {
+  const client = createClient({
+    chain: studionet,
+    endpoint: STUDIONET_RPC_URL,
+    account: account as `0x${string}`,
+  });
+  const res = await client.appealTransaction({
+    txId: txHash as never,
+  });
+  return String(res);
 }
 
 export async function readRefundableBalance(
@@ -117,11 +199,40 @@ export async function writeLicenseFenceMethod(params: {
     endpoint: STUDIONET_RPC_URL,
     account: params.account as `0x${string}`,
   });
+  let fees: { distribution: unknown; feeValue: bigint } | undefined;
+  try {
+    const estimate = await client.estimateTransactionFeesForWrite({
+      address: params.contractAddress as `0x${string}`,
+      functionName: params.functionName,
+      args: params.args as never[],
+      value: params.value ?? 0n,
+    });
+    if (estimate?.distribution && estimate?.feeValue !== undefined) {
+      fees = {
+        distribution: estimate.distribution,
+        feeValue: BigInt(estimate.feeValue),
+      };
+    }
+  } catch {
+    try {
+      const fallback = await client.estimateTransactionFees();
+      if (fallback?.distribution && fallback?.feeValue !== undefined) {
+        fees = {
+          distribution: fallback.distribution,
+          feeValue: BigInt(fallback.feeValue),
+        };
+      }
+    } catch {
+      fees = undefined;
+    }
+  }
+
   const txHash = await client.writeContract({
     address: params.contractAddress as `0x${string}`,
     functionName: params.functionName,
     args: params.args as never[],
     value: params.value ?? 0n,
+    ...(fees ? { fees: fees as never } : {}),
   });
   return String(txHash);
 }

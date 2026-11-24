@@ -1,8 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ExternalLink, RefreshCw } from 'lucide-react';
 import rawProof from './data/proof.json';
-import type { OnChainBundle, ProofBundle, ProtocolStats } from './types/licenseFence';
-import { readLiveProtocolSnapshot, STUDIONET_CHAIN_ID } from './lib/genlayerClient';
+import type {
+  LiveTxStatus,
+  OnChainBundle,
+  ProofBundle,
+  ProtocolStats,
+  TrackedTransaction,
+} from './types/licenseFence';
+import {
+  fetchTransactionLifecycle,
+  readLiveProtocolSnapshot,
+  STUDIONET_CHAIN_ID,
+} from './lib/genlayerClient';
+import {
+  isTerminalStage,
+  loadTrackedTransactions,
+  saveTrackedTransactions,
+  upsertTrackedTransaction,
+} from './lib/txTracker';
 import { truncateMiddle } from './lib/validation';
 import { BundleDossierPanel } from './components/BundleDossierPanel';
 import { LiveDeskPanel } from './components/LiveDeskPanel';
@@ -15,8 +31,18 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('dossiers');
   const [liveBundles, setLiveBundles] = useState<OnChainBundle[] | null>(null);
   const [liveStats, setLiveStats] = useState<ProtocolStats | null>(null);
+  const [liveTxMap, setLiveTxMap] = useState<Record<string, LiveTxStatus>>({});
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [rpcState, setRpcState] = useState<'idle' | 'live' | 'error'>('idle');
+
+  // Resumable localStorage-persisted tx tracker
+  const [trackedTxs, setTrackedTxs] = useState<TrackedTransaction[]>(() => loadTrackedTransactions());
+  const [isPolling, setIsPolling] = useState(false);
+  const [autoPoll, setAutoPoll] = useState(true);
+
+  useEffect(() => {
+    saveTrackedTransactions(trackedTxs);
+  }, [trackedTxs]);
 
   const handleVerifyLive = useCallback(async () => {
     setIsRefreshing(true);
@@ -36,11 +62,95 @@ export default function App() {
     void handleVerifyLive();
   }, [handleVerifyLive]);
 
+  const pollTracked = useCallback(
+    async (listToPoll?: TrackedTransaction[]) => {
+      const targets = listToPoll ?? trackedTxs;
+      if (targets.length === 0) return;
+      setIsPolling(true);
+      try {
+        const updatedMap: Record<string, LiveTxStatus> = {};
+        const nextList = await Promise.all(
+          targets.map(async (item) => {
+            if (isTerminalStage(item.stage) && item.lastCheckedAt && !item.error) {
+              return item;
+            }
+            const live = await fetchTransactionLifecycle(item.txHash);
+            updatedMap[item.txHash.toLowerCase()] = live;
+            return {
+              ...item,
+              stage: live.stage,
+              statusName: live.statusName,
+              executionResult: live.executionResult,
+              blockNumber: live.blockNumber,
+              appealed: live.appealed,
+              lastCheckedAt: live.lastCheckedAt,
+              error: live.error,
+            };
+          })
+        );
+        setTrackedTxs(nextList);
+        setLiveTxMap((prev) => ({ ...prev, ...updatedMap }));
+      } finally {
+        setIsPolling(false);
+      }
+    },
+    [trackedTxs]
+  );
+
+  // 8s resumable auto-polling for non-terminal transactions (respects StudioNet 30 req/min rate limit)
+  useEffect(() => {
+    if (!autoPoll) return;
+    const hasPending = trackedTxs.some((t) => !isTerminalStage(t.stage) || !t.lastCheckedAt);
+    if (!hasPending) return;
+    const id = window.setInterval(() => {
+      void pollTracked();
+    }, 8000);
+    return () => window.clearInterval(id);
+  }, [autoPoll, trackedTxs, pollTracked]);
+
+  const handleTxSubmitted = (txHash: string, label: string, action: string) => {
+    const entry: TrackedTransaction = {
+      txHash,
+      label,
+      action,
+      addedAt: new Date().toISOString(),
+      stage: 'SUBMITTED',
+      statusName: 'SUBMITTED',
+      executionResult: 'PENDING',
+    };
+    setTrackedTxs((prev) => upsertTrackedTransaction(prev, entry));
+  };
+
+  const handleLoadAllProofTxs = () => {
+    const entries: TrackedTransaction[] = Object.entries(proof.txs).map(([key, hash]) => ({
+      txHash: hash,
+      label: key,
+      action: key.includes('withdraw')
+        ? 'withdraw_refundable'
+        : key.includes('expired')
+          ? 'settle_expired_bundle'
+          : key.includes('open_') || key.includes('too_vague')
+            ? 'open_clearance_bundle'
+            : key === 'deploy_tx'
+              ? 'deploy_contract'
+              : 'submit_slot_audit',
+      addedAt: new Date().toISOString(),
+      stage: 'PENDING',
+      statusName: 'PENDING',
+      executionResult: 'POLLING',
+    }));
+    let merged = [...trackedTxs];
+    for (const e of entries) {
+      merged = upsertTrackedTransaction(merged, e);
+    }
+    setTrackedTxs(merged);
+    void pollTracked(merged);
+  };
+
   const stats = liveStats ?? proof.on_chain_snapshot.stats;
 
   return (
     <div className="min-h-screen bg-[#09090B] text-[#FAFAFA]">
-      {/* Sticky Single-Row Top Bar */}
       <header className="sticky top-0 z-20 border-b border-white/[0.08] bg-[#09090B]/90 backdrop-blur">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -98,11 +208,10 @@ export default function App() {
         </div>
       </header>
 
-      {/* Protocol Summary Strip */}
       <div className="border-b border-white/[0.06] bg-[#0C0C0F]">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
           <span className="text-zinc-400">
-            SPDX Compatibility Lattice &amp; Multi-Slot Copyleft-Contamination Escrow
+            5-Class SPDX Lattice &amp; Per-Slot Repo-Pinned Copyleft-Contamination Escrow
           </span>
           <div className="flex flex-wrap items-center gap-4 font-mono text-zinc-400">
             <span>
@@ -127,18 +236,39 @@ export default function App() {
         </div>
       </div>
 
-      {/* Main Content */}
       <main className="mx-auto max-w-7xl px-4 sm:px-6 py-6">
-        {tab === 'dossiers' && <BundleDossierPanel proof={proof} liveBundles={liveBundles} />}
+        {tab === 'dossiers' && (
+          <BundleDossierPanel
+            proof={proof}
+            liveBundles={liveBundles}
+            liveTxMap={liveTxMap}
+            rpcState={rpcState}
+          />
+        )}
         {tab === 'desk' && (
           <LiveDeskPanel
             proof={proof}
             liveBundles={liveBundles}
             onRefreshLive={handleVerifyLive}
             isRefreshing={isRefreshing}
+            onTxSubmitted={handleTxSubmitted}
           />
         )}
-        {tab === 'telemetry' && <LedgerTelemetryPanel proof={proof} />}
+        {tab === 'telemetry' && (
+          <LedgerTelemetryPanel
+            proof={proof}
+            trackedTxs={trackedTxs}
+            isPolling={isPolling}
+            autoPoll={autoPoll}
+            onToggleAutoPoll={() => setAutoPoll((v) => !v)}
+            onPollNow={() => pollTracked()}
+            onLoadAllProofTxs={handleLoadAllProofTxs}
+            onAddManualTx={(hash, label) => handleTxSubmitted(hash, label, 'manual_track')}
+            onRemoveTx={(hash) =>
+              setTrackedTxs((prev) => prev.filter((t) => t.txHash.toLowerCase() !== hash.toLowerCase()))
+            }
+          />
+        )}
       </main>
     </div>
   );

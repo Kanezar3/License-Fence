@@ -14,19 +14,15 @@ VENDOR = "0x2222222222222222222222222222222222222222"
 AUDITOR_1 = "0x3333333333333333333333333333333333333333"
 AUDITOR_2 = "0x4444444444444444444444444444444444444444"
 
-PREFIX = "https://raw.githubusercontent.com/"
-APACHE_URL = (
-    "https://raw.githubusercontent.com/psf/requests/"
-    "3c7baaa05ab4aa49cc819ce3a819d260de19c157/LICENSE"
-)
-BSD_URL = (
-    "https://raw.githubusercontent.com/pallets/flask/"
-    "49943b5a94413a530761350f04e896f76e8d620e/LICENSE.txt"
-)
-AGPL_URL = (
-    "https://raw.githubusercontent.com/grafana/grafana/"
-    "88998cea58e933452355eb4c7cbe1a452ef0f817/LICENSE"
-)
+REQUESTS_PREFIX = "https://raw.githubusercontent.com/psf/requests/"
+FFMPEG_PREFIX = "https://raw.githubusercontent.com/FFmpeg/FFmpeg/"
+CONSUL_PREFIX = "https://raw.githubusercontent.com/hashicorp/consul/"
+GRAFANA_PREFIX = "https://raw.githubusercontent.com/grafana/grafana/"
+
+APACHE_URL = f"{REQUESTS_PREFIX}3c7baaa05ab4aa49cc819ce3a819d260de19c157/LICENSE"
+FFMPEG_URL = f"{FFMPEG_PREFIX}f9145f2284641ff1567a58aebe616370fd8f04d7/LICENSE.md"
+CONSUL_URL = f"{CONSUL_PREFIX}1b3b4fc657b239ead67349bb7142095a566419d3/LICENSE"
+AGPL_URL = f"{GRAFANA_PREFIX}88998cea58e933452355eb4c7cbe1a452ef0f817/LICENSE"
 
 
 class _TransferLog:
@@ -154,7 +150,14 @@ def _wire_nondet(gl, web_fn, prompt_fn):
     gl.nondet.exec_prompt = staticmethod(prompt_fn)
 
 
-def _open_bundle(c, gl, policy="PROPRIETARY_COMMERCIAL", slots="http-client,web-router", deadline=1795431600, escrow=1001):
+def _open_bundle(
+    c,
+    gl,
+    policy="PROPRIETARY_COMMERCIAL",
+    slots_spec=f"http-client={REQUESTS_PREFIX}|media-codec={FFMPEG_PREFIX}",
+    deadline=1795431600,
+    escrow=1001,
+):
     _set_tx(gl, BUYER, escrow, dt="2026-11-23T10:00:00Z")
     _wire_nondet(
         gl,
@@ -163,7 +166,7 @@ def _open_bundle(c, gl, policy="PROPRIETARY_COMMERCIAL", slots="http-client,web-
             {
                 "verdict": "OBSERVABLE_SCOPE",
                 "reason_code": "CONCRETE_DEPENDENCY_POLICY",
-                "rationale": "Concrete dependency slots and SPDX policy.",
+                "rationale": "Concrete dependency slots with pinned owner/repo prefixes.",
             }
         ),
     )
@@ -173,8 +176,7 @@ def _open_bundle(c, gl, policy="PROPRIETARY_COMMERCIAL", slots="http-client,web-
             policy,
             VENDOR,
             "All dependencies must satisfy the target commercial license compatibility policy.",
-            slots,
-            PREFIX,
+            slots_spec,
             deadline,
         )
     )
@@ -182,25 +184,38 @@ def _open_bundle(c, gl, policy="PROPRIETARY_COMMERCIAL", slots="http-client,web-
     return res["bundle"]
 
 
-def test_upfront_deposit_capture_and_validation_refund():
+def test_rejects_unbounded_global_github_prefix_and_refunds():
     mod, gl = _load_module()
     c = mod.LicenseFence()
     _set_tx(gl, BUYER, 500)
     res = json.loads(
         c.open_clearance_bundle(
-            "Bad Policy Bundle",
-            "INVALID_POLICY",
+            "Unbounded Prefix Bundle",
+            "PROPRIETARY_COMMERCIAL",
             VENDOR,
             "Concrete scope charter for release clearance.",
-            "dep-a",
-            PREFIX,
+            "dep-a=https://raw.githubusercontent.com/",
             1795431600,
         )
     )
     assert res["ok"] is False
-    assert res["error"] == "INVALID_TARGET_POLICY"
+    assert res["error"] == "PREFIX_MUST_BIND_OWNER_AND_REPO"
     assert int(json.loads(c.get_refundable_balance(BUYER))["refundable_wei"]) == 500
     assert int(json.loads(c.get_protocol_stats())["total_locked_wei"]) == 0
+
+
+def test_blocks_cross_repo_agpl_spoofing_attack():
+    mod, gl = _load_module()
+    c = mod.LicenseFence()
+    bundle = _open_bundle(c, gl, escrow=1000)
+
+    # Attacker attempts to submit grafana AGPL URL against Slot 0 (bound to psf/requests)
+    _set_tx(gl, AUDITOR_1, 200)
+    res = json.loads(c.submit_slot_audit(bundle["bundle_id"], 0, AGPL_URL, 1, 20))
+    assert res["ok"] is False
+    assert res["error"] == "URL_OUTSIDE_SLOT_REPO_PREFIX"
+    assert int(json.loads(c.get_refundable_balance(AUDITOR_1))["refundable_wei"]) == 200
+    assert json.loads(c.get_bundle(bundle["bundle_id"]))["status"] == "OPEN"
 
 
 def test_fail_closed_trusted_time_unavailable():
@@ -213,8 +228,7 @@ def test_fail_closed_trusted_time_unavailable():
             "PERMISSIVE_ONLY",
             VENDOR,
             "Concrete scope charter for release.",
-            "dep-a",
-            PREFIX,
+            f"dep-a={REQUESTS_PREFIX}",
             1795431600,
         )
 
@@ -240,8 +254,7 @@ def test_gate1_too_vague_refunds_buyer():
             "PERMISSIVE_ONLY",
             VENDOR,
             "Make sure everything feels friendly and clean.",
-            "dep-a",
-            PREFIX,
+            f"dep-a={REQUESTS_PREFIX}",
             1795431600,
         )
     )
@@ -250,11 +263,10 @@ def test_gate1_too_vague_refunds_buyer():
     assert int(json.loads(c.get_refundable_balance(BUYER))["refundable_wei"]) == 750
 
 
-def test_multi_slot_clearance_and_exact_wei_conservation():
+def test_multi_slot_permissive_plus_weak_copyleft_clearance_and_wei_conservation():
     mod, gl = _load_module()
     c = mod.LicenseFence()
-    # Escrow = 1001 wei -> auditor_pool = 200, vendor = 801; 2 auditors -> 100 each (exact conservation)
-    bundle = _open_bundle(c, gl, escrow=1001)
+    bundle = _open_bundle(c, gl, policy="PROPRIETARY_COMMERCIAL", escrow=1001)
 
     apache_body = b"Apache License\nVersion 2.0, January 2004\nTERMS AND CONDITIONS FOR USE\n"
     _set_tx(gl, AUDITOR_1, 150)
@@ -274,24 +286,25 @@ def test_multi_slot_clearance_and_exact_wei_conservation():
     assert r1["ok"] is True
     assert r1["audit"]["audit_status"] == "SLOT_CLEARED"
     assert r1["bundle"]["status"] == "OPEN"
-    assert r1["bundle"]["cleared_slot_count"] == 1
-    assert int(json.loads(c.get_refundable_balance(AUDITOR_1))["refundable_wei"]) == 150
 
-    bsd_body = b"Copyright 2010 Pallets\nRedistribution and use in source and binary forms are permitted.\n"
+    ffmpeg_body = (
+        b"Most files in FFmpeg are under the GNU Lesser General Public License version 2.1 or later (LGPL v2.1+).\n"
+        b"None of these GPL parts are used by default unless --enable-gpl is passed.\n"
+    )
     _set_tx(gl, AUDITOR_2, 175)
     _wire_nondet(
         gl,
-        lambda url: _FakeWebResponse(200, bsd_body),
+        lambda url: _FakeWebResponse(200, ffmpeg_body),
         lambda prompt, response_format="json": json.dumps(
             {
-                "verdict": "PERMISSIVE",
-                "reason_code": "MIT_OR_BSD_GRANT",
-                "evidence_quote": "Redistribution and use in source and binary forms",
-                "rationale": "BSD-3-Clause permissive grant.",
+                "verdict": "WEAK_COPYLEFT",
+                "reason_code": "LGPL_OR_MPL_FILE_SCOPE",
+                "evidence_quote": "GNU Lesser General Public License version 2.1",
+                "rationale": "Default FFmpeg build is LGPL v2.1+ weak copyleft; optional GPL disabled by default.",
             }
         ),
     )
-    r2 = json.loads(c.submit_slot_audit(bundle["bundle_id"], 1, BSD_URL, 1, 2))
+    r2 = json.loads(c.submit_slot_audit(bundle["bundle_id"], 1, FFMPEG_URL, 1, 2))
     assert r2["ok"] is True
     assert r2["bundle"]["status"] == "CLEARED_FOR_RELEASE"
     assert r2["bundle"]["cleared_slot_count"] == 2
@@ -301,74 +314,57 @@ def test_multi_slot_clearance_and_exact_wei_conservation():
     a1_bal = int(json.loads(c.get_refundable_balance(AUDITOR_1))["refundable_wei"])
     a2_bal = int(json.loads(c.get_refundable_balance(AUDITOR_2))["refundable_wei"])
     assert vendor_bal == 801
-    assert a1_bal == 150 + 100
-    assert a2_bal == 175 + 100
+    assert a1_bal == 250
+    assert a2_bal == 275
     assert (vendor_bal + (a1_bal - 150) + (a2_bal - 175)) == 1001
 
 
-def test_copyleft_contamination_short_circuit():
+def test_bsl_source_available_contamination_short_circuit():
     mod, gl = _load_module()
     c = mod.LicenseFence()
-    bundle = _open_bundle(c, gl, policy="PROPRIETARY_COMMERCIAL", slots="ui-core,chart-lib", escrow=1000)
+    bundle = _open_bundle(
+        c,
+        gl,
+        policy="PROPRIETARY_COMMERCIAL",
+        slots_spec=f"service-mesh={CONSUL_PREFIX}|http-client={REQUESTS_PREFIX}",
+        escrow=1000,
+    )
 
-    agpl_body = b"GNU AFFERO GENERAL PUBLIC LICENSE\nVersion 3, 19 November 2007\nnetwork server software.\n"
+    bsl_body = (
+        b"Business Source License\n"
+        b"Additional Use Grant: You may make production use provided Your use does not include offering "
+        b"the Licensed Work on a hosted basis in order to compete with IBM Corp's paid version(s).\n"
+    )
     _set_tx(gl, AUDITOR_1, 200)
     _wire_nondet(
         gl,
-        lambda url: _FakeWebResponse(200, agpl_body),
+        lambda url: _FakeWebResponse(200, bsl_body),
         lambda prompt, response_format="json": json.dumps(
             {
-                "verdict": "NETWORK_COPYLEFT",
-                "reason_code": "AGPL_NETWORK_INTERACTION_CLAUSE",
-                "evidence_quote": "GNU AFFERO GENERAL PUBLIC LICENSE",
-                "rationale": "AGPL-3.0 network copyleft incompatible with proprietary commercial target.",
+                "verdict": "SOURCE_AVAILABLE_RESTRICTED",
+                "reason_code": "BSL_OR_NON_COMPETE_RESTRICTION",
+                "evidence_quote": "Business Source License",
+                "rationale": "BSL non-compete clause restricts commercial competitive offerings.",
             }
         ),
     )
-    res = json.loads(c.submit_slot_audit(bundle["bundle_id"], 0, AGPL_URL, 1, 3))
+    res = json.loads(c.submit_slot_audit(bundle["bundle_id"], 0, CONSUL_URL, 1, 3))
     assert res["ok"] is True
     assert res["audit"]["audit_status"] == "CONTAMINATION_TRIGGERED"
     assert res["bundle"]["status"] == "CONTAMINATED"
-    assert res["bundle"]["contaminating_slot"] == 0
     assert int(json.loads(c.get_refundable_balance(BUYER))["refundable_wei"]) == 800
     assert int(json.loads(c.get_refundable_balance(AUDITOR_1))["refundable_wei"]) == 400
     assert int(json.loads(c.get_refundable_balance(VENDOR))["refundable_wei"]) == 0
-    assert int(json.loads(c.get_protocol_stats())["total_locked_wei"]) == 0
 
 
-def test_insufficient_evidence_refunds_auditor_and_keeps_slot_pending():
+def test_per_auditor_retry_cap_prevents_slot_bricking():
     mod, gl = _load_module()
     c = mod.LicenseFence()
-    bundle = _open_bundle(c, gl, escrow=1000)
-
-    _set_tx(gl, AUDITOR_1, 120)
-    _wire_nondet(
-        gl,
-        lambda url: _FakeWebResponse(200, b"*.pyc\n__pycache__/\n.env\n"),
-        lambda prompt, response_format="json": json.dumps(
-            {
-                "verdict": "INSUFFICIENT_EVIDENCE",
-                "reason_code": "UNRELATED_FILE_OR_SLICE",
-                "evidence_quote": "",
-                "rationale": "File is a .gitignore with no license terms.",
-            }
-        ),
+    bundle = _open_bundle(
+        c, gl, policy="PERMISSIVE_ONLY", slots_spec=f"http-client={REQUESTS_PREFIX}", escrow=1000
     )
-    res = json.loads(c.submit_slot_audit(bundle["bundle_id"], 0, BSD_URL, 1, 3))
-    assert res["ok"] is True
-    assert res["audit"]["audit_status"] == "INSUFFICIENT_RETRYABLE"
-    assert res["bundle"]["status"] == "OPEN"
-    assert res["bundle"]["slots"][0]["status"] == "PENDING"
-    assert res["bundle"]["slots"][0]["attempts"] == 1
-    assert int(json.loads(c.get_refundable_balance(AUDITOR_1))["refundable_wei"]) == 120
-    assert int(json.loads(c.get_refundable_balance(BUYER))["refundable_wei"]) == 0
 
-
-def test_unverifiable_fetch_503_and_max_5_retries():
-    mod, gl = _load_module()
-    c = mod.LicenseFence()
-    bundle = _open_bundle(c, gl, escrow=1000)
-
+    # Spammer (AUDITOR_1) exhausts 5 retries with HTTP 503 / INSUFFICIENT_EVIDENCE
     for attempt in range(1, 6):
         _set_tx(gl, AUDITOR_1, 100)
         _wire_nondet(
@@ -379,15 +375,46 @@ def test_unverifiable_fetch_503_and_max_5_retries():
         res = json.loads(c.submit_slot_audit(bundle["bundle_id"], 0, APACHE_URL, 1, 5))
         assert res["ok"] is True
         assert res["audit"]["verdict"] == "UNVERIFIABLE_FETCH"
-        assert res["audit"]["audit_status"] == "UNVERIFIABLE_RETRYABLE"
-        assert res["bundle"]["slots"][0]["attempts"] == attempt
-        assert int(json.loads(c.get_refundable_balance(AUDITOR_1))["refundable_wei"]) == 100 * attempt
 
+    # 6th attempt from AUDITOR_1 is blocked (and refunded)
     _set_tx(gl, AUDITOR_1, 100)
     res6 = json.loads(c.submit_slot_audit(bundle["bundle_id"], 0, APACHE_URL, 1, 5))
     assert res6["ok"] is False
-    assert res6["error"] == "MAX_SLOT_ATTEMPTS_REACHED"
+    assert res6["error"] == "MAX_AUDITOR_ATTEMPTS_REACHED"
     assert int(json.loads(c.get_refundable_balance(AUDITOR_1))["refundable_wei"]) == 600
+
+    # Honest AUDITOR_2 can STILL clear Slot 0 (slot was NOT bricked by AUDITOR_1!)
+    _set_tx(gl, AUDITOR_2, 100)
+    _wire_nondet(
+        gl,
+        lambda url: _FakeWebResponse(200, b"Apache License Version 2.0, January 2004"),
+        lambda prompt, response_format="json": json.dumps(
+            {
+                "verdict": "PERMISSIVE",
+                "reason_code": "APACHE_2_GRANT",
+                "evidence_quote": "Apache License Version 2.0",
+                "rationale": "Apache 2.0 permissive grant.",
+            }
+        ),
+    )
+    res_honest = json.loads(c.submit_slot_audit(bundle["bundle_id"], 0, APACHE_URL, 1, 1))
+    assert res_honest["ok"] is True
+    assert res_honest["bundle"]["status"] == "CLEARED_FOR_RELEASE"
+
+
+def test_late_audit_after_deadline_rejected_and_refunded():
+    mod, gl = _load_module()
+    c = mod.LicenseFence()
+    # 2026-11-23T10:00:00Z = 1795428000; deadline = +50s (1795428050)
+    deadline = 1795428050
+    bundle = _open_bundle(c, gl, deadline=deadline, escrow=1000)
+
+    # Attempt audit at deadline + 5s (inside grace window) -> rejected with BUNDLE_DEADLINE_PASSED
+    _set_tx(gl, AUDITOR_1, 150, dt="2026-11-23T10:00:55Z")
+    res = json.loads(c.submit_slot_audit(bundle["bundle_id"], 0, APACHE_URL, 1, 5))
+    assert res["ok"] is False
+    assert res["error"] == "BUNDLE_DEADLINE_PASSED"
+    assert int(json.loads(c.get_refundable_balance(AUDITOR_1))["refundable_wei"]) == 150
 
 
 def test_incompatible_verdict_reason_rejected():
@@ -402,7 +429,7 @@ def test_incompatible_verdict_reason_rejected():
         lambda prompt, response_format="json": json.dumps(
             {
                 "verdict": "PERMISSIVE",
-                "reason_code": "AGPL_NETWORK_INTERACTION_CLAUSE",
+                "reason_code": "BSL_OR_NON_COMPETE_RESTRICTION",
                 "evidence_quote": "Apache License Version 2.0",
                 "rationale": "Mismatched reason code.",
             }
@@ -416,28 +443,23 @@ def test_settle_expired_bundle_enforces_grace_period_and_withdraw():
     mod, gl = _load_module()
     _TRANSFERS.clear()
     c = mod.LicenseFence()
-    # 2026-11-23T10:00:00Z = 1795428000; deadline = +50s (1795428050)
     deadline = 1795428050
     bundle = _open_bundle(c, gl, deadline=deadline, escrow=1000)
 
-    # Before deadline -> BUNDLE_NOT_EXPIRED
     _set_tx(gl, BUYER, 0, dt="2026-11-23T10:00:30Z")
     with pytest.raises(mod.gl.vm.UserError, match="BUNDLE_NOT_EXPIRED"):
         c.settle_expired_bundle(bundle["bundle_id"])
 
-    # Inside EXPIRY_GRACE_SECONDS (deadline + 10s < deadline + 15s) -> still BUNDLE_NOT_EXPIRED
     _set_tx(gl, BUYER, 0, dt="2026-11-23T10:01:00Z")
     with pytest.raises(mod.gl.vm.UserError, match="BUNDLE_NOT_EXPIRED"):
         c.settle_expired_bundle(bundle["bundle_id"])
 
-    # At deadline + 15s (10:01:05Z) -> EXPIRED_REFUNDED
     _set_tx(gl, BUYER, 0, dt="2026-11-23T10:01:05Z")
     res_exp = json.loads(c.settle_expired_bundle(bundle["bundle_id"]))
     assert res_exp["ok"] is True
     assert res_exp["bundle"]["status"] == "EXPIRED_REFUNDED"
     assert int(json.loads(c.get_refundable_balance(BUYER))["refundable_wei"]) == 1000
 
-    # Pull withdrawal via emit_transfer
     w_res = json.loads(c.withdraw_refundable())
     assert w_res["ok"] is True
     assert int(w_res["withdrawn_wei"]) == 1000

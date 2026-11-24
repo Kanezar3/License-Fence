@@ -6,6 +6,9 @@ export const POLICY_ALLOWED_CLASSES: Record<TargetPolicy, string[]> = {
   SAAS_CLOUD_SERVICE: ['PERMISSIVE', 'WEAK_COPYLEFT', 'STRONG_COPYLEFT'],
 };
 
+const REPO_PREFIX_RE =
+  /^https:\/\/raw\.githubusercontent\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/$/;
+
 const GITHUB_40HEX_RE =
   /^https:\/\/raw\.githubusercontent\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/[0-9a-fA-F]{40}\/[^\s?#]+$/;
 
@@ -15,14 +18,51 @@ export function isValidEvmAddress(addr: string): boolean {
   return EVM_ADDR_RE.test(addr.trim());
 }
 
+export function validateSlotRepoPrefix(prefix: string): { valid: boolean; reason?: string } {
+  const clean = prefix.trim();
+  if (!REPO_PREFIX_RE.test(clean)) {
+    return {
+      valid: false,
+      reason: 'Slot repo prefix must bind owner/repo: https://raw.githubusercontent.com/<owner>/<repo>/',
+    };
+  }
+  return { valid: true };
+}
+
+export function validateSlotSpecString(spec: string): { valid: boolean; count: number; reason?: string } {
+  const entries = spec
+    .split(/[|\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (entries.length < 1 || entries.length > 5) {
+    return { valid: false, count: entries.length, reason: 'Specify 1 to 5 dependency slots.' };
+  }
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const eq = entry.indexOf('=');
+    if (eq <= 0) {
+      return { valid: false, count: entries.length, reason: 'Each slot must use format: slot_name=https://raw.githubusercontent.com/<owner>/<repo>/' };
+    }
+    const name = entry.slice(0, eq).trim().toLowerCase();
+    const pref = entry.slice(eq + 1).trim();
+    if (seen.has(name)) {
+      return { valid: false, count: entries.length, reason: `Duplicate slot name: ${name}` };
+    }
+    const check = validateSlotRepoPrefix(pref);
+    if (!check.valid) return { valid: false, count: entries.length, reason: check.reason };
+    seen.add(name);
+  }
+  return { valid: true, count: entries.length };
+}
+
 export function validateCommitPinnedGithubUrl(
   url: string,
-  allowedPrefix = 'https://raw.githubusercontent.com/'
+  slotRepoPrefix?: string
 ): { valid: boolean; reason?: string } {
   const clean = url.trim();
   if (!clean) return { valid: false, reason: 'Evidence URL is required.' };
-  if (!clean.startsWith(allowedPrefix)) {
-    return { valid: false, reason: `URL must start with ${allowedPrefix}` };
+  if (slotRepoPrefix && !clean.startsWith(slotRepoPrefix)) {
+    return { valid: false, reason: `URL must start with slot repo prefix ${slotRepoPrefix}` };
   }
   if (!GITHUB_40HEX_RE.test(clean)) {
     return {

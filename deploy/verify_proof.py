@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -23,6 +22,8 @@ BROWSER_UA = (
 
 
 def patch_provider_user_agent() -> None:
+    if not hasattr(GenLayerProvider, "_make_request"):
+        return
     def _make_request(self, method, params):
         payload = {"jsonrpc": "2.0", "id": int(time.time() * 1000), "method": method, "params": params}
         r = requests.post(
@@ -48,6 +49,7 @@ def main() -> int:
     patch_provider_user_agent()
     proof = json.loads(PROOF_PATH.read_text(encoding="utf-8"))
     assert PROOF_PATH.read_bytes() == FRONTEND_PROOF_PATH.read_bytes(), "proof.json mismatch"
+    assert proof.get("source_commit"), "Missing source_commit in proof.json"
 
     expected_sha = hashlib.sha256(CONTRACT_PATH.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
     assert proof["contract_source_sha256"] == expected_sha, (
@@ -61,25 +63,29 @@ def main() -> int:
     print(f"Verifying all {len(proof['txs'])} finalized transactions on StudioNet...")
     for name, tx_hash in proof["txs"].items():
         rec = client.get_transaction(tx_hash)
-        status = str(rec.get("status_name", "")).upper()
-        exec_res = str(rec.get("execution_result", "")).upper()
+        lifecycle = rec.get("lifecycle") or {}
+        status = str(rec.get("status_name") or lifecycle.get("state") or "").upper()
+        exec_res = str(rec.get("execution_result") or "").upper()
         if exec_res != "SUCCESS":
-            lr = rec.get("consensus_data", {}).get("leader_receipt")
+            lr = (rec.get("consensus_data") or {}).get("leader_receipt")
             if isinstance(lr, list) and lr:
                 lr = lr[0]
             if isinstance(lr, dict):
-                exec_res = str(lr.get("execution_result", "")).upper()
+                exec_res = str(lr.get("execution_result") or "").upper()
         assert status == "FINALIZED" and exec_res == "SUCCESS", f"{name} failed: {status}/{exec_res}"
         print(f"  [OK] tx {name}: {tx_hash} ({status} / {exec_res})")
 
     bundles = unwrap_json(client.read_contract(address=contract_addr, function_name="get_all_bundles", args=[]))
     audits = unwrap_json(client.read_contract(address=contract_addr, function_name="get_all_audits", args=[]))
+    rejections = unwrap_json(client.read_contract(address=contract_addr, function_name="get_rejected_submissions", args=[]))
     by_bundle = {int(b["bundle_id"]): b for b in bundles}
 
-    assert by_bundle[1]["status"] == "CLEARED_FOR_RELEASE"
-    assert by_bundle[2]["status"] == "CONTAMINATED"
-    assert by_bundle[3]["status"] == "OPEN"
-    assert by_bundle[4]["status"] == "EXPIRED_REFUNDED"
+    assert by_bundle[1]["status"] == "CLEARED_FOR_RELEASE", f"Bundle 1: {by_bundle[1]['status']}"
+    assert by_bundle[2]["status"] == "CONTAMINATED", f"Bundle 2: {by_bundle[2]['status']}"
+    assert by_bundle[3]["status"] == "CONTAMINATED", f"Bundle 3: {by_bundle[3]['status']}"
+    assert by_bundle[4]["status"] == "OPEN", f"Bundle 4: {by_bundle[4]['status']}"
+    assert by_bundle[5]["status"] == "EXPIRED_REFUNDED", f"Bundle 5: {by_bundle[5]['status']}"
+    assert any(r.get("reason") == "URL_OUTSIDE_SLOT_REPO_PREFIX" for r in rejections), "Missing spoof block rejection"
 
     for a in audits:
         excerpt = a.get("snippet_excerpt", "")
@@ -93,7 +99,10 @@ def main() -> int:
         )
         assert int(bal["refundable_wei"]) == 0, f"{role_key} refundable balance not 0: {bal}"
 
-    print(f"[OK] All 7 License Fence live cases, {len(proof['txs'])} finalized txs, snippet SHA-256s, and zero post-withdrawal balances verified!")
+    print(
+        f"[OK] All 8 License Fence v2 live cases, {len(proof['txs'])} finalized txs, "
+        f"NOASSERTION semantic verdicts, cross-repo spoof guard, snippet SHA-256s, and zero balances verified!"
+    )
     return 0
 
 

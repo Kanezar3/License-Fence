@@ -1,16 +1,15 @@
-# License Fence — Live Demo Script
+# License Fence — 2-Minute Demo Script
 
-1. **Open the App (`Bundle Dossiers`)**:
-   - Inspect `LF-01` through `LF-07` in the left rail.
-   - Click `LF-02` and `LF-03` to show multi-slot clearance on Bundle #1 (`http-client` Apache-2.0 + `web-router` BSD-3-Clause -> `CLEARED_FOR_RELEASE` with 80% vendor payout + 20% split across two auditors).
-   - Click **Verify SHA-256 in Browser** to recompute the on-chain snippet digest locally via WebCrypto.
-   - Click `LF-04` to show the **AGPL-3.0 Copyleft Contamination Short-Circuit** on Bundle #2 (`grafana/grafana` `LICENSE` -> `CONTAMINATED`, 80% buyer refund + 20% auditor bounty).
-   - Click `LF-05` and `LF-06` to show non-slashing retryable `INSUFFICIENT_EVIDENCE` (unrelated `.gitignore` and `protectai/rebuff` prompt injection ignored, refunding the auditor bond).
-   - Click **Verify Live StudioNet** in the header to query the deployed StudioNet contract directly.
+1. **Zero-Wallet Inspection (`Bundle Dossiers`) — 45s**:
+   - Open https://license-fence.vercel.app. Note the live `StudioNet · 61999 (Live)` indicator and 5-class SPDX Compatibility Lattice table at the bottom.
+   - Select **`LF-03`** (*FFmpeg LGPL v2.1+ Default — GitHub `NOASSERTION`*): point out that FFmpeg's `LICENSE.md` mentions MIT, BSD, LGPL v2.1+, and optional `--enable-gpl` GPL v2+ in the same paragraph, causing GitHub's SPDX scanner to return `NOASSERTION`. Show that GenLayer validators classified it as `WEAK_COPYLEFT : LGPL_OR_MPL_FILE_SCOPE` (compatible with `PROPRIETARY_COMMERCIAL`), completing Bundle #1's 2-auditor 80/20 release (`CLEARED_FOR_RELEASE`). Click **Verify SHA-256 in Browser**.
+   - Select **`LF-04`** (*HashiCorp Consul BSL 1.1 — GitHub `NOASSERTION`*): show how validators detected the IBM non-compete grant (`SOURCE_AVAILABLE_RESTRICTED`) and triggered the `CONTAMINATED` short-circuit (80% buyer refund + 20% auditor bounty).
+   - Select **`LF-06`** and **`LF-07`**: show that cross-repo AGPL spoofing was blocked on-chain (`URL_OUTSIDE_SLOT_REPO_PREFIX`), and prompt injection inside `protectai/rebuff` was ignored with non-slashing auditor bond refund.
+   - Point out the side-by-side **Recorded Proof vs. Live StudioNet RPC Read** strip and **GenLayer Native Appeal Window** panel.
 
-2. **Interactive Transactions (`Clearance Desk`)**:
+2. **Live Resumable Consensus Telemetry (`Consensus Telemetry`) — 35s**:
+   - Click **Load All 19 Exhibit Txs** to query live StudioNet RPC status (`getTransaction`) across all 19 finalized transactions, showing the 5-stage progress bars, `localStorage` persistence, 8s auto-polling, and expandable native Appeal Window rows.
+
+3. **Interactive StudioNet Writes (`Clearance Desk`) — 40s**:
    - Click **Connect MetaMask (61999)** and **Sync On-Chain Tables**.
-   - Use **Preset A / B / C** to prefill `submit_slot_audit` or open a new multi-slot bundle with `open_clearance_bundle`.
-
-3. **Consensus Ledger (`Consensus Telemetry`)**:
-   - Inspect all 16 finalized StudioNet transactions with direct Explorer links.
+   - Show per-slot repo prefix pinning (`name=https://raw.githubusercontent.com/<owner>/<repo>/`) in `open_clearance_bundle`, select **Preset A / B / C** in `submit_slot_audit`, and explain that `genlayer-js@2.0.0` estimates StudioNet fees (`estimateTransactionFeesForWrite`) before submitting and tracks the returned tx hash in the resumable telemetry monitor.

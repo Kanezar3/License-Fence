@@ -13,26 +13,33 @@ import {
   parseGenToWei,
   truncateMiddle,
   validateCommitPinnedGithubUrl,
+  validateSlotSpecString,
 } from '../lib/validation';
 
 const AUDIT_PRESETS = [
   {
-    id: 'apache',
-    label: 'Preset A · Apache-2.0 (psf/requests)',
-    url: 'https://raw.githubusercontent.com/psf/requests/3c7baaa05ab4aa49cc819ce3a819d260de19c157/LICENSE',
+    id: 'ffmpeg',
+    label: 'Preset A · FFmpeg LGPL v2.1+ (GitHub NOASSERTION)',
+    bundleId: '1',
+    slotIdx: '1',
+    url: 'https://raw.githubusercontent.com/FFmpeg/FFmpeg/f9145f2284641ff1567a58aebe616370fd8f04d7/LICENSE.md',
     start: '1',
-    end: '25',
+    end: '15',
   },
   {
-    id: 'agpl',
-    label: 'Preset B · AGPL-3.0 Contamination (grafana)',
-    url: 'https://raw.githubusercontent.com/grafana/grafana/88998cea58e933452355eb4c7cbe1a452ef0f817/LICENSE',
+    id: 'consul',
+    label: 'Preset B · HashiCorp Consul BSL 1.1 (NOASSERTION)',
+    bundleId: '2',
+    slotIdx: '0',
+    url: 'https://raw.githubusercontent.com/hashicorp/consul/1b3b4fc657b239ead67349bb7142095a566419d3/LICENSE',
     start: '1',
-    end: '25',
+    end: '28',
   },
   {
     id: 'injection',
     label: 'Preset C · Prompt-Injection Defense (rebuff)',
+    bundleId: '4',
+    slotIdx: '1',
     url: 'https://raw.githubusercontent.com/protectai/rebuff/4d2fe064abf164e7381556d23e48e210080f8afa/python-sdk/tests/test_sdk.py',
     start: '1',
     end: '30',
@@ -44,11 +51,13 @@ export function LiveDeskPanel({
   liveBundles,
   onRefreshLive,
   isRefreshing,
+  onTxSubmitted,
 }: {
   proof: ProofBundle;
   liveBundles: OnChainBundle[] | null;
   onRefreshLive: () => Promise<void>;
   isRefreshing: boolean;
+  onTxSubmitted: (txHash: string, label: string, action: string) => void;
 }) {
   const [account, setAccount] = useState<string | null>(null);
   const [refundableWei, setRefundableWei] = useState<string>('0');
@@ -56,26 +65,27 @@ export function LiveDeskPanel({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  // Open bundle form
-  const [title, setTitle] = useState('Enterprise API Gateway Release v3.0');
+  // Open bundle form (per-slot repo-pinned spec)
+  const [title, setTitle] = useState('Commercial Media & HTTP SDK v3.2');
   const [policy, setPolicy] = useState<TargetPolicy>('PROPRIETARY_COMMERCIAL');
   const [vendorAddr, setVendorAddr] = useState(proof.vendor_address);
-  const [slotsCsv, setSlotsCsv] = useState('http-client,web-router');
-  const [charter, setCharter] = useState(
-    'All dependency slots must satisfy permissive or weak-copyleft SPDX licenses compatible with proprietary commercial shipping.'
+  const [slotsSpec, setSlotsSpec] = useState(
+    'http-client=https://raw.githubusercontent.com/psf/requests/\nmedia-codec=https://raw.githubusercontent.com/FFmpeg/FFmpeg/'
   );
-  const [prefix, setPrefix] = useState('https://raw.githubusercontent.com/');
+  const [charter, setCharter] = useState(
+    'Every dependency slot must verify permissive or weak-copyleft default licensing compatible with proprietary commercial distribution.'
+  );
   const [escrowGen, setEscrowGen] = useState('0.001');
   const [ttlSec, setTtlSec] = useState('86400');
 
   // Submit audit form
-  const [bundleId, setBundleId] = useState('3');
-  const [slotIdx, setSlotIdx] = useState('0');
-  const [evidenceUrl, setEvidenceUrl] = useState(AUDIT_PRESETS[0].url);
-  const [startLine, setStartLine] = useState(AUDIT_PRESETS[0].start);
-  const [endLine, setEndLine] = useState(AUDIT_PRESETS[0].end);
+  const [bundleId, setBundleId] = useState('4');
+  const [slotIdx, setSlotIdx] = useState('1');
+  const [evidenceUrl, setEvidenceUrl] = useState(AUDIT_PRESETS[2].url);
+  const [startLine, setStartLine] = useState(AUDIT_PRESETS[2].start);
+  const [endLine, setEndLine] = useState(AUDIT_PRESETS[2].end);
   const [bondGen, setBondGen] = useState('0.0002');
-  const [expireId, setExpireId] = useState('3');
+  const [expireId, setExpireId] = useState('4');
 
   const handleConnect = async () => {
     setErrorMsg(null);
@@ -101,7 +111,8 @@ export function LiveDeskPanel({
         functionName: 'withdraw_refundable',
         args: [],
       });
-      setStatusMsg(`Withdrawal tx submitted: ${tx}`);
+      onTxSubmitted(tx, 'Withdraw Refundable Escrow', 'withdraw_refundable');
+      setStatusMsg(`Withdrawal tx submitted and tracked in Consensus Telemetry: ${tx}`);
       const bal = await readRefundableBalance(proof.contract_address, account);
       setRefundableWei(bal);
     } catch (e) {
@@ -121,18 +132,29 @@ export function LiveDeskPanel({
       setErrorMsg('Vendor beneficiary must be a valid 0x EVM address.');
       return;
     }
+    const specCheck = validateSlotSpecString(slotsSpec);
+    if (!specCheck.valid) {
+      setErrorMsg(specCheck.reason || 'Invalid per-slot repo prefix spec.');
+      return;
+    }
     setBusy('open');
     setErrorMsg(null);
     try {
       const deadlineTs = Math.floor(Date.now() / 1000) + Math.max(30, Number(ttlSec) || 86400);
+      const normalizedSpec = slotsSpec
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .join('|');
       const tx = await writeLicenseFenceMethod({
         account,
         contractAddress: proof.contract_address,
         functionName: 'open_clearance_bundle',
-        args: [title.trim(), policy, vendorAddr.trim(), charter.trim(), slotsCsv.trim(), prefix.trim(), deadlineTs],
+        args: [title.trim(), policy, vendorAddr.trim(), charter.trim(), normalizedSpec, deadlineTs],
         value: parseGenToWei(escrowGen),
       });
-      setStatusMsg(`open_clearance_bundle submitted: ${tx}`);
+      onTxSubmitted(tx, `Open Bundle: ${title.trim()}`, 'open_clearance_bundle');
+      setStatusMsg(`open_clearance_bundle submitted and added to resumable tracker: ${tx}`);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -161,7 +183,8 @@ export function LiveDeskPanel({
         args: [Number(bundleId), Number(slotIdx), evidenceUrl.trim(), Number(startLine), Number(endLine)],
         value: parseGenToWei(bondGen),
       });
-      setStatusMsg(`submit_slot_audit submitted: ${tx}`);
+      onTxSubmitted(tx, `Audit Bundle #${bundleId} Slot ${slotIdx}`, 'submit_slot_audit');
+      setStatusMsg(`submit_slot_audit submitted and added to resumable tracker: ${tx}`);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -183,7 +206,8 @@ export function LiveDeskPanel({
         functionName: 'settle_expired_bundle',
         args: [Number(expireId)],
       });
-      setStatusMsg(`settle_expired_bundle submitted: ${tx}`);
+      onTxSubmitted(tx, `Expire Bundle #${expireId}`, 'settle_expired_bundle');
+      setStatusMsg(`settle_expired_bundle submitted and added to resumable tracker: ${tx}`);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -242,6 +266,8 @@ export function LiveDeskPanel({
             key={p.id}
             type="button"
             onClick={() => {
+              setBundleId(p.bundleId);
+              setSlotIdx(p.slotIdx);
               setEvidenceUrl(p.url);
               setStartLine(p.start);
               setEndLine(p.end);
@@ -268,7 +294,6 @@ export function LiveDeskPanel({
 
       {/* Two-Column Workbench */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        {/* Left: Open Bundle + Settle Expired */}
         <div className="space-y-5">
           <form
             onSubmit={(e) => void handleOpenBundle(e)}
@@ -276,7 +301,7 @@ export function LiveDeskPanel({
           >
             <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
               <h3 className="font-mono text-sm font-semibold text-white">open_clearance_bundle</h3>
-              <span className="text-xs text-zinc-500">Multi-Slot Escrow</span>
+              <span className="text-xs text-zinc-500">Per-Slot Repo Pinning</span>
             </div>
 
             <div className="space-y-2.5 text-xs">
@@ -289,28 +314,30 @@ export function LiveDeskPanel({
                 />
               </label>
 
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block">
-                  <span className="text-zinc-400">Target Policy</span>
-                  <select
-                    value={policy}
-                    onChange={(e) => setPolicy(e.target.value as TargetPolicy)}
-                    className="mt-1 w-full rounded-md border border-white/[0.08] bg-[#09090B] px-3 py-2 font-mono text-zinc-100 focus:border-white/25 focus:outline-none"
-                  >
-                    <option value="PERMISSIVE_ONLY">PERMISSIVE_ONLY</option>
-                    <option value="PROPRIETARY_COMMERCIAL">PROPRIETARY_COMMERCIAL</option>
-                    <option value="SAAS_CLOUD_SERVICE">SAAS_CLOUD_SERVICE</option>
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="text-zinc-400">Dependency Slots (CSV, 1–5)</span>
-                  <input
-                    value={slotsCsv}
-                    onChange={(e) => setSlotsCsv(e.target.value)}
-                    className="mt-1 w-full rounded-md border border-white/[0.08] bg-[#09090B] px-3 py-2 font-mono text-zinc-100 focus:border-white/25 focus:outline-none"
-                  />
-                </label>
-              </div>
+              <label className="block">
+                <span className="text-zinc-400">Target Policy</span>
+                <select
+                  value={policy}
+                  onChange={(e) => setPolicy(e.target.value as TargetPolicy)}
+                  className="mt-1 w-full rounded-md border border-white/[0.08] bg-[#09090B] px-3 py-2 font-mono text-zinc-100 focus:border-white/25 focus:outline-none"
+                >
+                  <option value="PERMISSIVE_ONLY">PERMISSIVE_ONLY</option>
+                  <option value="PROPRIETARY_COMMERCIAL">PROPRIETARY_COMMERCIAL</option>
+                  <option value="SAAS_CLOUD_SERVICE">SAAS_CLOUD_SERVICE</option>
+                </select>
+              </label>
+
+              <label className="block">
+                <span className="text-zinc-400">
+                  Dependency Slots (1–5 lines, <code className="text-zinc-300">name=https://raw.githubusercontent.com/owner/repo/</code>)
+                </span>
+                <textarea
+                  rows={3}
+                  value={slotsSpec}
+                  onChange={(e) => setSlotsSpec(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-white/[0.08] bg-[#09090B] px-3 py-2 font-mono text-[11px] text-zinc-100 focus:border-white/25 focus:outline-none"
+                />
+              </label>
 
               <label className="block">
                 <span className="text-zinc-400">Vendor Beneficiary (0x...)</span>
@@ -328,15 +355,6 @@ export function LiveDeskPanel({
                   value={charter}
                   onChange={(e) => setCharter(e.target.value)}
                   className="mt-1 w-full rounded-md border border-white/[0.08] bg-[#09090B] px-3 py-2 text-zinc-100 focus:border-white/25 focus:outline-none"
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-zinc-400">Allowed Source Prefix</span>
-                <input
-                  value={prefix}
-                  onChange={(e) => setPrefix(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-white/[0.08] bg-[#09090B] px-3 py-2 font-mono text-zinc-100 focus:border-white/25 focus:outline-none"
                 />
               </label>
 
@@ -371,7 +389,7 @@ export function LiveDeskPanel({
 
           <div className="rounded-lg border border-white/[0.08] bg-[#0F0F12] p-4 flex flex-wrap items-end justify-between gap-3">
             <label className="text-xs flex-1 min-w-[140px]">
-              <span className="text-zinc-400">Bundle ID to Expire (after deadline + 15s grace)</span>
+              <span className="text-zinc-400">Bundle ID to Expire (enforces deadline + 15s grace)</span>
               <input
                 value={expireId}
                 onChange={(e) => setExpireId(e.target.value)}
@@ -389,7 +407,6 @@ export function LiveDeskPanel({
           </div>
         </div>
 
-        {/* Right: Submit Slot Audit + Live Bundles */}
         <div className="space-y-5">
           <form
             onSubmit={(e) => void handleSubmitAudit(e)}
@@ -436,7 +453,7 @@ export function LiveDeskPanel({
             </div>
 
             <label className="block text-xs">
-              <span className="text-zinc-400">Immutable Evidence URL (40-Hex SHA)</span>
+              <span className="text-zinc-400">Immutable Evidence URL (Must Match Slot&apos;s Bound Repo)</span>
               <input
                 value={evidenceUrl}
                 onChange={(e) => setEvidenceUrl(e.target.value)}
@@ -464,7 +481,6 @@ export function LiveDeskPanel({
             </div>
           </form>
 
-          {/* On-Chain Bundles Summary */}
           <div className="rounded-lg border border-white/[0.08] bg-[#0F0F12] p-4 space-y-3">
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-zinc-100">On-Chain Clearance Bundles ({bundles.length})</span>

@@ -1,7 +1,8 @@
-"""Resumable GenLayer StudioNet deployment & 7-case live seeding script for License Fence."""
+"""Resumable GenLayer StudioNet deployment & 8-case live seeding script for License Fence v2."""
 
 import hashlib
 import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,6 @@ import requests
 from genlayer_py import create_account, create_client
 from genlayer_py.chains import studionet
 from genlayer_py.provider import GenLayerProvider
-from genlayer_py.types import TransactionStatus
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 CONTRACT_PATH = ROOT_DIR / "contracts" / "license_fence.py"
@@ -30,32 +30,26 @@ BROWSER_UA = (
 
 ESCROW_WEI = 1_000_000_000_000_000  # 0.001 GEN
 BOND_WEI = 200_000_000_000_000      # 0.0002 GEN
-FUND_AMOUNT_WEI = 5_000_000_000_000_000_000  # 5 GEN
+FUND_AMOUNT_WEI = 20_000_000_000_000_000_000  # 20 GEN (covers StudioNet fee policy + escrow/bonds)
 
-RAW_GH_PREFIX = "https://raw.githubusercontent.com/"
-APACHE_URL = (
-    "https://raw.githubusercontent.com/psf/requests/"
-    "3c7baaa05ab4aa49cc819ce3a819d260de19c157/LICENSE"
-)
-BSD_URL = (
-    "https://raw.githubusercontent.com/pallets/flask/"
-    "49943b5a94413a530761350f04e896f76e8d620e/LICENSE.txt"
-)
-AGPL_URL = (
-    "https://raw.githubusercontent.com/grafana/grafana/"
-    "88998cea58e933452355eb4c7cbe1a452ef0f817/LICENSE"
-)
-GITIGNORE_URL = (
-    "https://raw.githubusercontent.com/pallets/flask/"
-    "49943b5a94413a530761350f04e896f76e8d620e/.gitignore"
-)
-REBUFF_URL = (
-    "https://raw.githubusercontent.com/protectai/rebuff/"
-    "4d2fe064abf164e7381556d23e48e210080f8afa/python-sdk/tests/test_sdk.py"
-)
+REQUESTS_PREFIX = "https://raw.githubusercontent.com/psf/requests/"
+FFMPEG_PREFIX = "https://raw.githubusercontent.com/FFmpeg/FFmpeg/"
+CONSUL_PREFIX = "https://raw.githubusercontent.com/hashicorp/consul/"
+GRAFANA_PREFIX = "https://raw.githubusercontent.com/grafana/grafana/"
+FLASK_PREFIX = "https://raw.githubusercontent.com/pallets/flask/"
+REBUFF_PREFIX = "https://raw.githubusercontent.com/protectai/rebuff/"
+
+APACHE_URL = f"{REQUESTS_PREFIX}3c7baaa05ab4aa49cc819ce3a819d260de19c157/LICENSE"
+FFMPEG_URL = f"{FFMPEG_PREFIX}f9145f2284641ff1567a58aebe616370fd8f04d7/LICENSE.md"
+CONSUL_URL = f"{CONSUL_PREFIX}1b3b4fc657b239ead67349bb7142095a566419d3/LICENSE"
+AGPL_URL = f"{GRAFANA_PREFIX}88998cea58e933452355eb4c7cbe1a452ef0f817/LICENSE"
+GITIGNORE_URL = f"{FLASK_PREFIX}49943b5a94413a530761350f04e896f76e8d620e/.gitignore"
+REBUFF_URL = f"{REBUFF_PREFIX}4d2fe064abf164e7381556d23e48e210080f8afa/python-sdk/tests/test_sdk.py"
 
 
 def patch_provider_user_agent() -> None:
+    if not hasattr(GenLayerProvider, "_make_request"):
+        return
     def _make_request(self, method, params):
         payload = {
             "jsonrpc": "2.0",
@@ -76,6 +70,14 @@ def patch_provider_user_agent() -> None:
         return data.get("result")
 
     GenLayerProvider._make_request = _make_request
+
+
+def estimate_fees(client) -> dict[str, Any]:
+    est = client.estimate_transaction_fees()
+    return {
+        "distribution": est["distribution"],
+        "feeValue": est["feeValue"],
+    }
 
 
 def rpc_call(method: str, params: list[Any]) -> Any:
@@ -148,7 +150,7 @@ def wait_finalized(client, tx_hash: str, label: str) -> dict[str, Any]:
     print(f"Waiting for finality [{label}]: {tx_hash}", flush=True)
     rec = client.wait_for_transaction_receipt(
         transaction_hash=tx_hash,
-        status=TransactionStatus.FINALIZED,
+        wait_until="finalized",
         interval=POLL_INTERVAL_MS,
         retries=POLL_RETRIES,
     )
@@ -174,6 +176,15 @@ def run_step_tx(state: dict[str, Any], step_key: str, client, submit_fn) -> tupl
     return tx_hash, rec
 
 
+def get_git_head() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(ROOT_DIR), "rev-parse", "HEAD"], text=True
+        ).strip()
+    except Exception:
+        return ""
+
+
 def main() -> None:
     patch_provider_user_agent()
     state = load_state()
@@ -185,11 +196,6 @@ def main() -> None:
 
     for acct in (buyer, vendor, auditor1, auditor2):
         fund_account(acct.address)
-
-    print(f"Buyer:    {buyer.address}", flush=True)
-    print(f"Vendor:   {vendor.address}", flush=True)
-    print(f"Auditor1: {auditor1.address}", flush=True)
-    print(f"Auditor2: {auditor2.address}", flush=True)
 
     buyer_client = create_client(chain=studionet, account=buyer)
     vendor_client = create_client(chain=studionet, account=vendor)
@@ -203,19 +209,21 @@ def main() -> None:
         state,
         "deploy_license_fence",
         buyer_client,
-        lambda: buyer_client.deploy_contract(code=contract_src, args=[]),
+        lambda: buyer_client.deploy_contract(
+            code=contract_src, args=[], fees=estimate_fees(buyer_client)
+        ),
     )
     contract_addr = state.get("contract_address") or deploy_rec.get("data", {}).get("contract_address")
     if not contract_addr:
         raise RuntimeError(f"Missing contract_address in deploy receipt: {deploy_rec}")
     state["contract_address"] = contract_addr
     save_state(state)
-    print(f"LicenseFence deployed at: {contract_addr}", flush=True)
+    print(f"LicenseFence v2 deployed at: {contract_addr}", flush=True)
 
     long_dl = int(time.time()) + 86400
 
     # LF-01: Gate-1 TOO_VAGUE rejection
-    lf01_tx, lf01_rec = run_step_tx(
+    lf01_tx, _ = run_step_tx(
         state,
         "lf01_too_vague",
         buyer_client,
@@ -227,83 +235,93 @@ def main() -> None:
                 "PERMISSIVE_ONLY",
                 vendor.address,
                 "Ship nice clean vibes and friendly community energy with good aesthetics.",
-                "vibe-pkg",
-                RAW_GH_PREFIX,
+                f"vibe-pkg={REQUESTS_PREFIX}",
                 long_dl,
             ],
-            value=ESCROW_WEI,
-        ),
+            value=ESCROW_WEI, fees=estimate_fees(buyer_client)),
     )
 
-    # LF-02: Open Bundles #1, #2, #3, #4
+    # Open Bundles #1..#5 (each slot strictly pinned to its owner/repo prefix!)
     b1_tx, _ = run_step_tx(
         state,
-        "lf02_bundle1_clearance",
+        "open_bundle1_clearance",
         buyer_client,
         lambda: buyer_client.write_contract(
             address=contract_addr,
             function_name="open_clearance_bundle",
             args=[
-                "Enterprise HTTP & Router SDK v2.4",
+                "Commercial Media & HTTP SDK v3.1",
                 "PROPRIETARY_COMMERCIAL",
                 vendor.address,
-                "Every dependency slot must verify a permissive or weak-copyleft SPDX license text compatible with proprietary commercial distribution.",
-                "http-client,web-router",
-                RAW_GH_PREFIX,
+                "Every dependency slot must verify permissive or weak-copyleft default licensing compatible with proprietary commercial distribution.",
+                f"http-client={REQUESTS_PREFIX}|media-codec={FFMPEG_PREFIX}",
                 long_dl,
             ],
-            value=ESCROW_WEI,
-        ),
+            value=ESCROW_WEI, fees=estimate_fees(buyer_client)),
     )
 
     b2_tx, _ = run_step_tx(
         state,
-        "lf02_bundle2_contamination",
+        "open_bundle2_bsl_contamination",
         buyer_client,
         lambda: buyer_client.write_contract(
             address=contract_addr,
             function_name="open_clearance_bundle",
             args=[
-                "Telemetry Analytics Suite v1.9",
+                "Hosted Service Mesh Distribution v2.0",
                 "PROPRIETARY_COMMERCIAL",
                 vendor.address,
-                "Verify that neither UI nor metrics core introduces AGPL or GPL copyleft obligations incompatible with proprietary commercial shipping.",
-                "dashboard-ui,metrics-core",
-                RAW_GH_PREFIX,
+                "Verify that service-mesh and http-client carry no source-available non-compete or strong copyleft restrictions.",
+                f"service-mesh={CONSUL_PREFIX}|http-client={REQUESTS_PREFIX}",
                 long_dl,
             ],
-            value=ESCROW_WEI,
-        ),
+            value=ESCROW_WEI, fees=estimate_fees(buyer_client)),
     )
 
     b3_tx, _ = run_step_tx(
         state,
-        "lf02_bundle3_retry_pool",
+        "open_bundle3_agpl_contamination",
         buyer_client,
         lambda: buyer_client.write_contract(
             address=contract_addr,
             function_name="open_clearance_bundle",
             args=[
-                "Auth Helper Permissive Audit",
-                "PERMISSIVE_ONLY",
+                "Observability Portal Appliance v1.5",
+                "PROPRIETARY_COMMERCIAL",
                 vendor.address,
-                "Verify the auth-helper dependency carries an explicit permissive license (MIT, BSD, or Apache-2.0) in its primary LICENSE text.",
-                "auth-helper",
-                RAW_GH_PREFIX,
+                "Verify dashboard-ui does not introduce AGPL network-copyleft obligations incompatible with proprietary commercial shipping.",
+                f"dashboard-ui={GRAFANA_PREFIX}",
                 long_dl,
             ],
-            value=ESCROW_WEI,
-        ),
+            value=ESCROW_WEI, fees=estimate_fees(buyer_client)),
     )
-
-    if "lf02_bundle4_expiry" not in state["txs"] or "bundle4_dl" not in state:
-        state["bundle4_dl"] = int(time.time()) + 90
-        save_state(state)
-    bundle4_dl = int(state["bundle4_dl"])
 
     b4_tx, _ = run_step_tx(
         state,
-        "lf02_bundle4_expiry",
+        "open_bundle4_retry_and_injection",
+        buyer_client,
+        lambda: buyer_client.write_contract(
+            address=contract_addr,
+            function_name="open_clearance_bundle",
+            args=[
+                "Web Router & Prompt-Guard Audit Bundle",
+                "PERMISSIVE_ONLY",
+                vendor.address,
+                "Verify web-router and guard-probe carry explicit permissive MIT, BSD, or Apache-2.0 licenses in their primary LICENSE texts.",
+                f"web-router={FLASK_PREFIX}|guard-probe={REBUFF_PREFIX}",
+                long_dl,
+            ],
+            value=ESCROW_WEI, fees=estimate_fees(buyer_client)),
+    )
+
+    if "open_bundle5_expiry" not in state["txs"] or "bundle5_dl" not in state:
+        state["bundle5_dl"] = int(time.time()) + 90
+        save_state(state)
+    bundle5_dl = int(state["bundle5_dl"])
+
+    b5_tx, _ = run_step_tx(
+        state,
+        "open_bundle5_expiry",
         buyer_client,
         lambda: buyer_client.write_contract(
             address=contract_addr,
@@ -313,131 +331,143 @@ def main() -> None:
                 "PERMISSIVE_ONLY",
                 vendor.address,
                 "Verify plugin-core carries an explicit permissive MIT, BSD, or Apache-2.0 license before bundle deadline.",
-                "plugin-core",
-                RAW_GH_PREFIX,
-                bundle4_dl,
+                f"plugin-core={REQUESTS_PREFIX}",
+                bundle5_dl,
             ],
-            value=ESCROW_WEI,
-        ),
+            value=ESCROW_WEI, fees=estimate_fees(buyer_client)),
     )
 
-    # LF-03: Multi-slot 2-auditor clearance on Bundle #1 (Apache-2.0 + BSD-3-Clause)
-    lf03_s0_tx, lf03_s0_rec = run_step_tx(
+    # LF-02: Bundle #1 Slot 0 (psf/requests Apache-2.0 -> PERMISSIVE)
+    lf02_tx, _ = run_step_tx(
         state,
-        "lf03_bundle1_slot0_apache",
+        "lf02_bundle1_slot0_apache",
         aud1_client,
         lambda: aud1_client.write_contract(
             address=contract_addr,
             function_name="submit_slot_audit",
             args=[1, 0, APACHE_URL, 1, 25],
-            value=BOND_WEI,
-        ),
+            value=BOND_WEI, fees=estimate_fees(aud1_client)),
     )
 
-    lf03_s1_tx, lf03_s1_rec = run_step_tx(
+    # LF-03: Bundle #1 Slot 1 (FFmpeg/FFmpeg LICENSE.md -> GitHub NOASSERTION -> semantic WEAK_COPYLEFT -> CLEARED_FOR_RELEASE!)
+    lf03_tx, _ = run_step_tx(
         state,
-        "lf03_bundle1_slot1_bsd",
+        "lf03_bundle1_slot1_ffmpeg_lgpl",
         aud2_client,
         lambda: aud2_client.write_contract(
             address=contract_addr,
             function_name="submit_slot_audit",
-            args=[1, 1, BSD_URL, 1, 28],
-            value=BOND_WEI,
-        ),
+            args=[1, 1, FFMPEG_URL, 1, 15],
+            value=BOND_WEI, fees=estimate_fees(aud2_client)),
     )
 
-    # LF-04: AGPL-3.0 Contamination Short-Circuit on Bundle #2 Slot 0
-    lf04_tx, lf04_rec = run_step_tx(
+    # LF-04: Bundle #2 Slot 0 (hashicorp/consul BSL 1.1 -> GitHub NOASSERTION -> SOURCE_AVAILABLE_RESTRICTED -> CONTAMINATED!)
+    lf04_tx, _ = run_step_tx(
         state,
-        "lf04_bundle2_agpl_contamination",
+        "lf04_bundle2_consul_bsl_contamination",
         aud1_client,
         lambda: aud1_client.write_contract(
             address=contract_addr,
             function_name="submit_slot_audit",
-            args=[2, 0, AGPL_URL, 1, 25],
-            value=BOND_WEI,
-        ),
+            args=[2, 0, CONSUL_URL, 1, 28],
+            value=BOND_WEI, fees=estimate_fees(aud1_client)),
     )
 
-    # LF-05: Unrelated file (.gitignore) -> INSUFFICIENT_EVIDENCE (auditor bond refunded)
-    lf05_tx, lf05_rec = run_step_tx(
+    # LF-05: Bundle #3 Slot 0 (grafana/grafana AGPL-3.0 -> NETWORK_COPYLEFT -> CONTAMINATED!)
+    lf05_tx, _ = run_step_tx(
         state,
-        "lf05_bundle3_unrelated_gitignore",
+        "lf05_bundle3_agpl_contamination",
         aud1_client,
         lambda: aud1_client.write_contract(
             address=contract_addr,
             function_name="submit_slot_audit",
-            args=[3, 0, GITIGNORE_URL, 1, 15],
-            value=BOND_WEI,
-        ),
+            args=[3, 0, AGPL_URL, 1, 25],
+            value=BOND_WEI, fees=estimate_fees(aud1_client)),
     )
 
-    # LF-06: Adversarial Prompt Injection -> INSUFFICIENT_EVIDENCE (auditor bond refunded)
-    lf06_tx, lf06_rec = run_step_tx(
+    # LF-06a: Cross-repo spoofing attack blocked (auditor submits grafana AGPL against pallets/flask Slot 0 -> URL_OUTSIDE_SLOT_REPO_PREFIX)
+    lf06_spoof_tx, _ = run_step_tx(
         state,
-        "lf06_bundle3_prompt_injection",
+        "lf06_bundle4_spoof_blocked",
         aud1_client,
         lambda: aud1_client.write_contract(
             address=contract_addr,
             function_name="submit_slot_audit",
-            args=[3, 0, REBUFF_URL, 1, 30],
-            value=BOND_WEI,
-        ),
+            args=[4, 0, AGPL_URL, 1, 25],
+            value=BOND_WEI, fees=estimate_fees(aud1_client)),
     )
 
-    # LF-07: Wait until bundle4_dl + 45 (past EXPIRY_GRACE_SECONDS=15 + StudioNet clock skew), settle_expired_bundle(4), and withdraw from all 4 EOAs
-    wait_until = bundle4_dl + 45
+    # LF-06b: Unrelated file (.gitignore in pallets/flask -> INSUFFICIENT_EVIDENCE, auditor bond refunded)
+    lf06_unrelated_tx, _ = run_step_tx(
+        state,
+        "lf06_bundle4_unrelated_gitignore",
+        aud1_client,
+        lambda: aud1_client.write_contract(
+            address=contract_addr,
+            function_name="submit_slot_audit",
+            args=[4, 0, GITIGNORE_URL, 1, 15],
+            value=BOND_WEI, fees=estimate_fees(aud1_client)),
+    )
+
+    # LF-07: Adversarial Prompt Injection Ignored (protectai/rebuff Slot 1 -> INSUFFICIENT_EVIDENCE, auditor bond refunded)
+    lf07_tx, _ = run_step_tx(
+        state,
+        "lf07_bundle4_prompt_injection",
+        aud1_client,
+        lambda: aud1_client.write_contract(
+            address=contract_addr,
+            function_name="submit_slot_audit",
+            args=[4, 1, REBUFF_URL, 1, 30],
+            value=BOND_WEI, fees=estimate_fees(aud1_client)),
+    )
+
+    # LF-08: Enforced 15s grace expiry on Bundle #5 + 4 EOA native withdrawals
+    wait_until = bundle5_dl + 45
     now = time.time()
     if now < wait_until:
         sleep_s = int(wait_until - now) + 1
-        print(f"Sleeping {sleep_s}s until Bundle #4 deadline + 45s (past 15s grace)...", flush=True)
+        print(f"Sleeping {sleep_s}s until Bundle #5 deadline + 45s (past 15s grace)...", flush=True)
         time.sleep(sleep_s)
 
-    lf07_exp_tx, _ = run_step_tx(
+    lf08_exp_tx, _ = run_step_tx(
         state,
-        "lf07_settle_expired_bundle4",
+        "lf08_settle_expired_bundle5",
         buyer_client,
         lambda: buyer_client.write_contract(
             address=contract_addr,
             function_name="settle_expired_bundle",
-            args=[4],
-        ),
+            args=[5], fees=estimate_fees(buyer_client)),
     )
 
     w_buyer_tx, _ = run_step_tx(
         state,
-        "lf07_withdraw_buyer",
+        "lf08_withdraw_buyer",
         buyer_client,
         lambda: buyer_client.write_contract(
-            address=contract_addr, function_name="withdraw_refundable", args=[]
-        ),
+            address=contract_addr, function_name="withdraw_refundable", args=[], fees=estimate_fees(buyer_client)),
     )
     w_vendor_tx, _ = run_step_tx(
         state,
-        "lf07_withdraw_vendor",
+        "lf08_withdraw_vendor",
         vendor_client,
         lambda: vendor_client.write_contract(
-            address=contract_addr, function_name="withdraw_refundable", args=[]
-        ),
+            address=contract_addr, function_name="withdraw_refundable", args=[], fees=estimate_fees(vendor_client)),
     )
     w_aud1_tx, _ = run_step_tx(
         state,
-        "lf07_withdraw_auditor1",
+        "lf08_withdraw_auditor1",
         aud1_client,
         lambda: aud1_client.write_contract(
-            address=contract_addr, function_name="withdraw_refundable", args=[]
-        ),
+            address=contract_addr, function_name="withdraw_refundable", args=[], fees=estimate_fees(aud1_client)),
     )
     w_aud2_tx, _ = run_step_tx(
         state,
-        "lf07_withdraw_auditor2",
+        "lf08_withdraw_auditor2",
         aud2_client,
         lambda: aud2_client.write_contract(
-            address=contract_addr, function_name="withdraw_refundable", args=[]
-        ),
+            address=contract_addr, function_name="withdraw_refundable", args=[], fees=estimate_fees(aud2_client)),
     )
 
-    # Read final state
     bundles = unwrap_json(buyer_client.read_contract(address=contract_addr, function_name="get_all_bundles", args=[]))
     audits = unwrap_json(buyer_client.read_contract(address=contract_addr, function_name="get_all_audits", args=[]))
     rejections = unwrap_json(buyer_client.read_contract(address=contract_addr, function_name="get_rejected_submissions", args=[]))
@@ -516,60 +546,70 @@ def main() -> None:
             "Multi-Slot Clearance Step 1: Apache-2.0 (Bundle #1, Slot 0)",
             1,
             b1_tx,
-            lf03_s0_tx,
+            lf02_tx,
             w_aud1_tx,
-            "Auditor 1 cleared Slot 0 (http-client) with commit-pinned psf/requests Apache-2.0 LICENSE; Bundle #1 remained OPEN awaiting Slot 1.",
+            "Auditor 1 cleared Slot 0 (http-client -> psf/requests) with Apache-2.0; Bundle #1 stayed OPEN awaiting Slot 1.",
         ),
         audit_case(
             "LF-03",
-            "lf03_bundle1_slot1_bsd_release",
-            "Multi-Slot Clearance Complete: BSD-3-Clause -> 80/20 Release (Bundle #1, Slot 1)",
+            "lf03_bundle1_slot1_ffmpeg_lgpl",
+            "Semantic NOASSERTION Clearance: FFmpeg LGPL v2.1+ Default (Bundle #1, Slot 1 -> 80/20 Release)",
             2,
             b1_tx,
-            lf03_s1_tx,
+            lf03_tx,
             w_vendor_tx,
-            "Auditor 2 cleared Slot 1 (web-router) with pallets/flask BSD-3-Clause LICENSE.txt; Bundle #1 finalized CLEARED_FOR_RELEASE (80% vendor, 20% split across both auditors).",
+            "GitHub SPDX returns NOASSERTION on FFmpeg/FFmpeg LICENSE.md (mentions MIT, BSD, LGPL v2.1+, and optional --enable-gpl GPL v2+). Validators judged default build WEAK_COPYLEFT (compatible with PROPRIETARY_COMMERCIAL), finalizing Bundle #1 CLEARED_FOR_RELEASE (80% vendor, 20% split across both auditors).",
         ),
         audit_case(
             "LF-04",
-            "lf04_bundle2_agpl_contamination",
-            "Copyleft Contamination Short-Circuit: AGPL-3.0 (Bundle #2, Slot 0)",
+            "lf04_bundle2_consul_bsl",
+            "Semantic NOASSERTION Contamination: HashiCorp Consul BSL 1.1 Non-Compete (Bundle #2, Slot 0)",
             3,
             b2_tx,
             lf04_tx,
             w_aud1_tx,
-            "Auditor 1 proved grafana/grafana AGPL-3.0 network copyleft incompatible with PROPRIETARY_COMMERCIAL; Bundle #2 short-circuited to CONTAMINATED (80% buyer refund + 20% auditor bounty).",
+            "GitHub SPDX returns NOASSERTION on hashicorp/consul LICENSE. Validators read the IBM competitive-offering ban as SOURCE_AVAILABLE_RESTRICTED, immediately short-circuiting Bundle #2 to CONTAMINATED (80% buyer refund + 20% auditor bounty).",
         ),
         audit_case(
             "LF-05",
-            "lf05_bundle3_unrelated_gitignore",
-            "Retryable Non-Slashing: Unrelated .gitignore File (Bundle #3, Attempt 1)",
+            "lf05_bundle3_agpl_contamination",
+            "Network-Copyleft Contamination Short-Circuit: Grafana AGPL-3.0 (Bundle #3, Slot 0)",
             4,
             b3_tx,
             lf05_tx,
             w_aud1_tx,
-            "Unrelated .gitignore slice yielded INSUFFICIENT_EVIDENCE; Slot 0 stayed PENDING (attempts=1) and auditor bond was refunded.",
+            "Auditor 1 proved grafana/grafana AGPL-3.0 incompatible with PROPRIETARY_COMMERCIAL; Bundle #3 short-circuited to CONTAMINATED (80% buyer refund + 20% auditor bounty).",
         ),
         audit_case(
             "LF-06",
-            "lf06_bundle3_prompt_injection",
-            "Adversarial Prompt Injection Ignored (Bundle #3, Attempt 2)",
+            "lf06_bundle4_spoof_and_unrelated",
+            "Cross-Repo Spoof Blocked + Unrelated .gitignore Retryable Refund (Bundle #4, Slot 0)",
             5,
-            b3_tx,
-            lf06_tx,
+            b4_tx,
+            lf06_unrelated_tx,
             w_aud1_tx,
-            "Prompt injection inside protectai/rebuff test fixture ignored; Slot 0 stayed PENDING (attempts=2) and auditor bond was refunded.",
+            f"First, cross-repo AGPL spoofing against pallets/flask Slot 0 was rejected on-chain (tx {lf06_spoof_tx[:12]}..., URL_OUTSIDE_SLOT_REPO_PREFIX) with full bond refund. Next, unrelated .gitignore yielded INSUFFICIENT_EVIDENCE with non-slashing auditor bond refund.",
+        ),
+        audit_case(
+            "LF-07",
+            "lf07_bundle4_prompt_injection",
+            "Adversarial Prompt Injection Ignored (Bundle #4, Slot 1)",
+            6,
+            b4_tx,
+            lf07_tx,
+            w_aud1_tx,
+            "Prompt injection inside protectai/rebuff test fixture was ignored; Slot 1 stayed PENDING and auditor bond was refunded.",
         ),
         {
-            "exhibit_code": "LF-07",
-            "case_id": "lf07_expiry_and_withdrawals",
-            "label": "Enforced 15s Grace Expiry & 4-EOA Native Withdrawals (Bundle #4)",
-            "bundle_id": 4,
+            "exhibit_code": "LF-08",
+            "case_id": "lf08_expiry_and_withdrawals",
+            "label": "Enforced 15s Grace Expiry & 4-EOA Native Withdrawals (Bundle #5)",
+            "bundle_id": 5,
             "slot_index": None,
             "slot_name": "plugin-core",
             "audit_id": None,
             "target_policy": "PERMISSIVE_ONLY",
-            "bundle_status": bundles_by_id[4]["status"],
+            "bundle_status": bundles_by_id[5]["status"],
             "verdict": "EXPIRED_REFUNDED",
             "reason_code": "BUNDLE_DEADLINE_PLUS_GRACE_EXPIRED",
             "audit_status": "EXPIRED_REFUNDED",
@@ -580,9 +620,9 @@ def main() -> None:
             "snippet_sha256": "",
             "snippet_excerpt": "",
             "evidence_quote": "",
-            "rationale": "Bundle #4 expired after deadline_ts + EXPIRY_GRACE_SECONDS (15s); full escrow refunded and all 4 EOA accounts withdrew via emit_transfer.",
-            "open_tx_hash": b4_tx,
-            "audit_tx_hash": lf07_exp_tx,
+            "rationale": "Bundle #5 settled EXPIRED_REFUNDED after deadline_ts + EXPIRY_GRACE_SECONDS (15s); all 4 EOA accounts withdrew via _EoaRecipient.emit_transfer to 0 balance.",
+            "open_tx_hash": b5_tx,
+            "audit_tx_hash": lf08_exp_tx,
             "withdraw_tx_hash": w_buyer_tx,
             "notes": "All 4 EOA accounts (buyer, vendor, auditor1, auditor2) withdrew via withdraw_refundable() to 0 balance.",
         },
@@ -596,6 +636,7 @@ def main() -> None:
         "explorer_url": EXPLORER_URL,
         "contract_address": contract_addr,
         "contract_source_sha256": source_sha256,
+        "source_commit": get_git_head(),
         "deploy_tx": deploy_tx,
         "buyer_address": buyer.address,
         "vendor_address": vendor.address,
@@ -604,20 +645,23 @@ def main() -> None:
         "txs": {
             "deploy_tx": deploy_tx,
             "lf01_too_vague": lf01_tx,
-            "lf02_bundle1": b1_tx,
-            "lf02_bundle2": b2_tx,
-            "lf02_bundle3": b3_tx,
-            "lf02_bundle4": b4_tx,
-            "lf03_bundle1_slot0": lf03_s0_tx,
-            "lf03_bundle1_slot1": lf03_s1_tx,
-            "lf04_bundle2_contamination": lf04_tx,
-            "lf05_bundle3_unrelated": lf05_tx,
-            "lf06_bundle3_injection": lf06_tx,
-            "lf07_settle_expired_bundle4": lf07_exp_tx,
-            "lf07_withdraw_buyer": w_buyer_tx,
-            "lf07_withdraw_vendor": w_vendor_tx,
-            "lf07_withdraw_auditor1": w_aud1_tx,
-            "lf07_withdraw_auditor2": w_aud2_tx,
+            "open_bundle1": b1_tx,
+            "open_bundle2": b2_tx,
+            "open_bundle3": b3_tx,
+            "open_bundle4": b4_tx,
+            "open_bundle5": b5_tx,
+            "lf02_bundle1_slot0_apache": lf02_tx,
+            "lf03_bundle1_slot1_ffmpeg_lgpl": lf03_tx,
+            "lf04_bundle2_consul_bsl": lf04_tx,
+            "lf05_bundle3_agpl": lf05_tx,
+            "lf06_bundle4_spoof_blocked": lf06_spoof_tx,
+            "lf06_bundle4_unrelated_gitignore": lf06_unrelated_tx,
+            "lf07_bundle4_prompt_injection": lf07_tx,
+            "lf08_settle_expired_bundle5": lf08_exp_tx,
+            "lf08_withdraw_buyer": w_buyer_tx,
+            "lf08_withdraw_vendor": w_vendor_tx,
+            "lf08_withdraw_auditor1": w_aud1_tx,
+            "lf08_withdraw_auditor2": w_aud2_tx,
         },
         "cases": cases,
         "on_chain_snapshot": {

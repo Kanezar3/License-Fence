@@ -3,21 +3,45 @@ export type TargetPolicy =
   | 'PROPRIETARY_COMMERCIAL'
   | 'SAAS_CLOUD_SERVICE';
 
-export type LicenseVerdict =
-  | 'PERMISSIVE'
-  | 'WEAK_COPYLEFT'
-  | 'STRONG_COPYLEFT'
-  | 'NETWORK_COPYLEFT'
-  | 'INSUFFICIENT_EVIDENCE'
-  | 'UNVERIFIABLE_FETCH'
-  | 'TOO_VAGUE'
-  | 'EXPIRED_REFUNDED';
+export type TxLifecycleStage =
+  | 'SUBMITTED'
+  | 'PENDING'
+  | 'ACCEPTED'
+  | 'FINALIZED_SUCCESS'
+  | 'FINALIZED_ERROR';
+
+export interface LiveTxStatus {
+  txHash: string;
+  stage: TxLifecycleStage;
+  statusName: string;
+  executionResult: string;
+  blockNumber?: string | number | null;
+  appealed?: boolean;
+  lastCheckedAt: string;
+  error?: string;
+}
+
+export interface TrackedTransaction {
+  txHash: string;
+  label: string;
+  action: string;
+  addedAt: string;
+  stage: TxLifecycleStage;
+  statusName: string;
+  executionResult: string;
+  blockNumber?: string | number | null;
+  appealed?: boolean;
+  lastCheckedAt?: string;
+  error?: string;
+}
 
 export interface BundleSlot {
   slot_index: number;
   name: string;
+  allowed_repo_prefix: string;
   status: 'PENDING' | 'CLEARED' | 'CONTAMINATED' | string;
   attempts: number;
+  attempts_by_auditor?: Record<string, number>;
   license_class: string;
   reason_code: string;
   cleared_by: string;
@@ -33,7 +57,6 @@ export interface OnChainBundle {
   allowed_classes: string[];
   scope_charter: string;
   charter_sha256: string;
-  allowed_source_prefix: string;
   escrow_wei: string;
   deadline_ts: number;
   expiry_threshold_ts: number;
@@ -93,6 +116,7 @@ export interface ProtocolStats {
   total_locked_wei: string;
   total_withdrawn_wei: string;
   expiry_grace_seconds: number;
+  max_auditor_attempts_per_slot?: number;
 }
 
 export interface ProofCase {
@@ -130,6 +154,7 @@ export interface ProofBundle {
   explorer_url: string;
   contract_address: string;
   contract_source_sha256: string;
+  source_commit: string;
   deploy_tx: string;
   buyer_address: string;
   vendor_address: string;
