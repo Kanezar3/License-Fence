@@ -350,7 +350,7 @@ export function BundleDossierPanel({
             {primaryTx && (
               <AppealWindowPanel
                 txHash={primaryTx}
-                stage={liveTx?.stage ?? 'FINALIZED_SUCCESS'}
+                stage={liveTx && !liveTx.error ? liveTx.stage : 'FINALIZED_SUCCESS'}
                 appealed={liveTx?.appealed}
               />
             )}

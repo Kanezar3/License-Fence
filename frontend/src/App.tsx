@@ -69,14 +69,17 @@ export default function App() {
       setIsPolling(true);
       try {
         const updatedMap: Record<string, LiveTxStatus> = {};
-        const nextList = await Promise.all(
-          targets.map(async (item) => {
-            if (isTerminalStage(item.stage) && item.lastCheckedAt && !item.error) {
-              return item;
-            }
-            const live = await fetchTransactionLifecycle(item.txHash);
+        const nextList: TrackedTransaction[] = [];
+        // Pace StudioNet RPC calls sequentially (250ms gap) to avoid 503 burst throttling
+        for (const item of targets) {
+          if (isTerminalStage(item.stage) && item.lastCheckedAt && !item.error) {
+            nextList.push(item);
+            continue;
+          }
+          const live = await fetchTransactionLifecycle(item.txHash);
+          if (!live.error) {
             updatedMap[item.txHash.toLowerCase()] = live;
-            return {
+            nextList.push({
               ...item,
               stage: live.stage,
               statusName: live.statusName,
@@ -84,12 +87,22 @@ export default function App() {
               blockNumber: live.blockNumber,
               appealed: live.appealed,
               lastCheckedAt: live.lastCheckedAt,
+              error: undefined,
+            });
+          } else {
+            // Preserve prior known stage on transient RPC error instead of regressing to PENDING
+            nextList.push({
+              ...item,
+              lastCheckedAt: live.lastCheckedAt,
               error: live.error,
-            };
-          })
-        );
+            });
+          }
+          await new Promise((r) => setTimeout(r, 250));
+        }
         setTrackedTxs(nextList);
-        setLiveTxMap((prev) => ({ ...prev, ...updatedMap }));
+        if (Object.keys(updatedMap).length > 0) {
+          setLiveTxMap((prev) => ({ ...prev, ...updatedMap }));
+        }
       } finally {
         setIsPolling(false);
       }
@@ -135,9 +148,9 @@ export default function App() {
               ? 'deploy_contract'
               : 'submit_slot_audit',
       addedAt: new Date().toISOString(),
-      stage: 'PENDING',
-      statusName: 'PENDING',
-      executionResult: 'POLLING',
+      stage: 'FINALIZED_SUCCESS',
+      statusName: 'FINALIZED',
+      executionResult: 'SUCCESS',
     }));
     let merged = [...trackedTxs];
     for (const e of entries) {
@@ -175,7 +188,10 @@ export default function App() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setTab(item.id as Tab)}
+                onClick={() => {
+                  setTab(item.id as Tab);
+                  window.scrollTo({ top: 0 });
+                }}
                 className={`rounded px-3 py-1 font-medium transition cursor-pointer ${
                   tab === item.id ? 'bg-white/[0.10] text-white' : 'text-zinc-400 hover:text-zinc-200'
                 }`}
